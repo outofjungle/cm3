@@ -1,0 +1,91 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use warnings;
+use strict;
+use Log::Log4perl qw/:easy/;
+use YAML::XS ();
+use File::Temp qw/tempdir/;
+use Chisel::Sanity;
+
+die "sanity should not be run as root.\n" if $< == 0;
+
+my $opt = YAML::XS::LoadFile( "/conf/chisel/sanity.conf" )
+  or die "Could not load configuration file!";
+
+my $scriptdir = "$opt->{var}/modules";                              # modules are here (contain sanity-checks)
+my $tmpdir    = tempdir( DIR => "$opt->{var}/tmp", CLEANUP => 1 );  # for building bits of buckets (say that three times fast)
+
+# Set up Log::Log4perl
+Log::Log4perl->init( \ $opt->{log4perl} );
+INFO "sanity starting";
+
+# Run sanity checker in the workspace
+my $sanity = Chisel::Sanity->new(
+    scriptdir => $scriptdir,
+    tmpdir    => $tmpdir,
+    gnupghome => $opt->{gnupghome},
+);
+
+$| = 1;
+
+# the builder tells us one of two things:
+#   ck 1234\n<content>\n
+#     ^ in this case we check a 1234-byte MANIFEST
+#   bl 5678\n<content>\n
+#     ^ we just need to register a 5678-byte blob with this content (it'll be part of a MANIFEST later)
+
+while( my $input = <STDIN> ) {
+    chomp $input;
+    
+    # both kinds of commands from the builder are "<action> <content-length>\n<content>\n"
+    my ( $action, $sz ) = ( $input =~ /^(ck|bl) (\d+)/ );
+    
+    my $contents;
+    if( defined $sz ) {
+        # read $sz bytes off STDIN
+        
+        $sz == read \*STDIN, $contents, $sz
+          or LOGDIE "sanity: tried to read $sz bytes but couldn't";
+
+        # skip past the trailing newline
+        my $JUNK;
+        1 == read \*STDIN, $JUNK, 1
+          or LOGDIE "sanity: can't fast-forward: $!";
+    } else {
+        # bad command
+        LOGDIE "sanity: got malformed input";
+    }
+    
+    if( $action eq 'ck' ) {
+        if( my $sig = eval { $sanity->check_bucket( manifest => $contents ) } ) {
+            print "ok $sig\0";
+        } else {
+            my $err = $@;
+            $err =~ s/\0//g; # extremely unlikely, but still
+            print "no $err\0";
+            ERROR "Failed sanity check:\n$err";
+        }
+    }
+    
+    elsif( $action eq 'bl' ) {
+        $sanity->add_blob( contents => $contents );
+    }
+    
+    else {
+        LOGDIE "sanity: got malformed input";
+    }
+}
+
+INFO "sanity stopping";
+
+exit 0;

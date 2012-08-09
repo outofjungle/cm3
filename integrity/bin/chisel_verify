@@ -1,0 +1,295 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use strict;
+use lib '/var/chisel/lib/perl5/site_perl';
+use Getopt::Long qw/ :config gnu_getopt /;
+use Chisel::Integrity;
+use Sys::Hostname ();
+
+my %opt = ( gnupghome => "/var/chisel/share/gnupg", "use-version" => "/etc/chisel/version" );
+
+my $USAGE = <<EOT;
+usage: chisel_verify [options] ( -S <script> | -R <keyring> | -d <data dir> )
+options:
+    --gnupghome <dir>       use keyrings in this directory [default $opt{gnupghome}]
+    --use-version <path>    path to most recent version [default $opt{"use-version"}]
+    --use-hostname <name>   override nodelist check to use this hostname
+    --update-keyrings       copy new keyrings from a data dir to gnupghome, if they look good
+                            (only makes sense if used with -d)
+    --verbose               print extra messages
+    --quiet                 don't print anything (beats --verbose)
+EOT
+
+GetOptions( \%opt, "S|check-script=s", "d|check-data=s", "R|check-keyring=s", "gnupghome=s", "use-version=s", "use-hostname=s", "update-keyrings", "q|quiet", "v|verbose", "h|help" );
+
+# sanity checks
+die "$USAGE" if $opt{h} || ( ($opt{S}?1:0) + ($opt{R}?1:0) + ($opt{d}?1:0) != 1 );
+die "$USAGE" if $opt{'update-keyrings'} && ! $opt{d};
+die "$USAGE" if $opt{'ignore-signatures'} && ! $opt{d};
+die "$opt{gnupghome} not found\n" if !-d $opt{gnupghome};
+
+# respect --quiet
+if( $opt{q} ) {
+    open STDOUT, ">", "/dev/null";
+    open STDERR, ">", "/dev/null";
+}
+
+# allow override of hostname
+my $HOSTNAME = $opt{'use-hostname'} || Sys::Hostname::hostname();
+
+# verify that we have our keyrings
+copy_initial_keyrings( $opt{gnupghome} );
+
+# for scoping
+do {
+    my $m = Chisel::Integrity->new( gnupghome => $opt{gnupghome}, verbose => $opt{v} );
+
+    if( $opt{d} ) { # check data directory
+        if( $opt{'update-keyrings'} ) {
+            # before checking the data directory, we may need to update keyrings
+            # 
+            # this is because data_or_die will check human signatures on scripts, which is problematic
+            # since a new human may have signed a script immediately after, or soon after, being added
+            # to the keyring.
+            
+            # only do anything if the ring(s) actually changed
+            my $autoring_differs = -f "$opt{d}/files/keyrings/autoring.gpg"
+              && ( system( "diff", "$opt{gnupghome}/autoring.gpg", "$opt{d}/files/keyrings/autoring.gpg" ) );
+            my $humanring_differs = -f "$opt{d}/files/keyrings/humanring.gpg"
+              && ( system( "diff", "$opt{gnupghome}/humanring.gpg", "$opt{d}/files/keyrings/humanring.gpg" ) );
+
+            if( $autoring_differs || $humanring_differs ) {
+                
+                # do this in an eval since if it fails, we'll just continue without updating keyrings
+                
+                my $r = eval {
+                    # to ensure the new keyring isn't totally crazy, we will first run all data_or_die checks
+                    # except the human signature check. this should be OK, even if an autoring key is revoked,
+                    # because the builder can continue signing buckets with the old key.
+                    data_or_die( $m, $opt{d}, skip_scripts => 1 );
+
+                    # let's verify that the new keyrings are signed properly
+                    keyring_or_die( $m, "$opt{d}/files/keyrings/autoring.gpg" );
+                    keyring_or_die( $m, "$opt{d}/files/keyrings/humanring.gpg" );
+
+                    # make sure these keyrings can be used to verify the new data directory ($opt{d})
+                    # we wouldn't want to install them and then be forced to die, this is a check against erroneous keyring checkins
+                    my $mnew = Chisel::Integrity->new( gnupghome => "$opt{d}/files/keyrings", verbose => $opt{v} );
+                    data_or_die( $mnew, $opt{d} );
+                    
+                    # looks okay, let's copy the keyrings over
+                    
+                    if( $autoring_differs ) {
+                        system( "cp", "$opt{d}/files/keyrings/autoring.gpg", "$opt{gnupghome}/autoring.gpg" );
+                        if($?) {
+                            die "tried to update autoring.gpg but couldn't\n";
+                        }
+
+                        warn "--update-keyrings: updated autoring.gpg\n";
+                    }
+                    
+                    if( $humanring_differs ) {
+                        system( "cp", "$opt{d}/files/keyrings/humanring.gpg", "$opt{gnupghome}/humanring.gpg" );
+                        if($?) {
+                            die "tried to update humanring.gpg but couldn't\n";
+                        }
+                        
+                        warn "--update-keyrings: updated humanring.gpg\n";
+                    }
+                    
+                    warn "--update-keyrings: keyrings updated\n";
+                    
+                    return 'ok';
+                };
+                
+                if( !defined($r) || $r ne 'ok' ) {
+                    my $msg = $@ || "something went wrong";
+                    warn "--update-keyrings: can't update keyrings: $msg";
+                }
+            } else {
+                warn "no need to update keyrings, skipping\n" if $opt{v};
+            }
+        }
+        
+        data_or_die( $m, $opt{d} );
+        warn "$opt{d} passes data directory checks\n" if $opt{v};
+    }
+
+    elsif( $opt{R} ) { # check new keyring
+        keyring_or_die( $m, $opt{R} );
+        warn "$opt{R} passes keyring checks\n" if $opt{v};
+    }
+
+    elsif( $opt{S} ) { # check new script
+        script_or_die( $m, $opt{S} );
+        warn "$opt{S} passes script checks\n" if $opt{v};
+    }
+    
+    else {
+        die "$USAGE";
+    }
+};
+
+exit 0;
+
+# return true value if a script is ok
+# die otherwise
+sub script_or_die {
+    my ( $m, $script ) = @_;
+    
+    die "$script: file is not readable\n"
+      unless -r $script;
+    
+    die "$script: missing human signature\n"
+      unless $m->verify_file( file => $script, key => "*", ring => "humanring.gpg" );
+
+    return 1;
+}
+
+# return true value if a keyring is ok
+# die otherwise
+sub keyring_or_die {
+    my ( $m, $keyring ) = @_;
+    
+    die "$keyring: file is not readable\n"
+      unless -r $keyring;
+    
+    die "$keyring: missing two human signatures\n"
+      unless $m->verify_file( file => $keyring, key => "**", ring => "humanring.gpg" );
+    
+    return 1;
+}
+
+# return true value if a data directory (like /var/chisel/data) is ok
+# die otherwise
+sub data_or_die {
+    my ( $m, $dir, %args ) = @_;
+    
+    # sanity checks
+    die "$dir: directory does not exist\n"
+      unless -d $dir;
+    
+    die "$dir: invalid manifest\n"
+      unless my $manifest = $m->verify_manifest( dir => $dir );
+    
+    die "$dir: could not verify builder signature\n"
+      unless $m->verify_file( file => $manifest, key => "chiselbuilder", ring => "autoring.gpg" );
+    
+    die "$dir: could not verify sanity signature\n"
+      unless $m->verify_file( file => $manifest, key => "chiselsanity", ring => "autoring.gpg" );
+    
+    die "$dir: failed version check\n"
+      unless check_version( $opt{"use-version"}, "$dir/VERSION" );
+    
+    die "$dir: failed nodelist check\n"
+      unless check_nodelist( "$dir/NODELIST" );
+    
+    # each script is signed individually
+    # this check can be skipped
+    if( ! $args{skip_scripts} ) {
+        opendir my $scriptdir, "$dir/scripts"
+          or die "opendir scripts: $!";
+        
+        my @scripts = grep { $_ ne '.' && $_ ne '..' && -x "$dir/scripts/$_" } readdir $scriptdir;
+        closedir $scriptdir;
+        
+        foreach my $s ( @scripts ) {
+            script_or_die( $m, "$dir/scripts/$s" );
+        }
+    }
+    
+    return 1;
+}
+
+# return true value if ok
+# return undef if not ok
+# die on error
+sub check_version {
+    my ( $fold, $fnew ) = @_;
+
+    die "$fnew not found\n" unless -f $fnew;
+
+    if( -r $fold ) {
+        # TODO:
+        # What to do if local version number can't be opened?
+        # What to do if local version number has a bad format?
+
+        open my $vfh, $fold
+          or die "could not open $fold: $!";
+        my $v_old = <$vfh>;
+        chomp $v_old;
+        close $vfh;
+
+        open $vfh, "$fnew"
+          or die "could not open $fnew: $!";
+        my $v_new = <$vfh>;
+        chomp $v_new;
+        close $vfh;
+
+        if( $v_old !~ /^\d+$/ ) {
+            warn "$fold: bad format, ignoring version check\n";
+            return 1;
+        } elsif( $v_new !~ /^\d+$/ ) {
+            warn "$fnew: bad format (not a number), ignoring version check\n";
+            return 1;
+        } elsif( $v_new < $v_old ) {
+            warn "version check failed: $v_new < $v_old\n";
+            return undef;
+        } else {
+            warn "$fnew: version OK: $v_new >= $v_old\n";
+            return 1;
+        }
+    } else {
+        warn "$fold: file unreadable, ignoring version check\n";
+        return 1;
+    }
+}
+
+# return true value if ok
+# return undef if not ok
+# die on error
+sub check_nodelist {
+    my ( $f ) = @_;
+    
+    open my $ffh, $f
+      or die "could not open $f: $!";
+    chomp( my @hosts = <$ffh> );
+    close $ffh;
+    
+    if( ! grep { $HOSTNAME eq $_ } @hosts ) {
+        warn "$f: hostname missing: $HOSTNAME\n";
+        return undef;
+    } else {
+        warn "$f: hostname OK\n";
+        return 1;
+    }
+}
+
+# normally clients will not have autoring.gpg and humanring.gpg on first install, but
+# they may have autoring.initial.gpg and humanring.initial.gpg
+#
+# this copies those initial keyrings in place if they're missing
+sub copy_initial_keyrings {
+    my $gnupghome = shift;
+    
+    if(!-e "$gnupghome/autoring.gpg" && -e "$gnupghome/autoring.initial.gpg") {
+        system ("cp $gnupghome/autoring.initial.gpg $gnupghome/autoring.gpg");
+    }
+
+    if(!-e "$gnupghome/humanring.gpg" && -e "$gnupghome/humanring.initial.gpg") {
+        system ("cp $gnupghome/humanring.initial.gpg $gnupghome/humanring.gpg");
+    }
+
+    die "Could not find autoring or autoring.initial in $gnupghome\n"    if( !-e "$gnupghome/autoring.gpg"  && !-e "$gnupghome/autoring.initial.gpg"); 
+    die "Could not find humanring or humanring.initial in $gnupghome\n"  if( !-e "$gnupghome/humanring.gpg" && !-e "$gnupghome/humanring.initial.gpg"); 
+}

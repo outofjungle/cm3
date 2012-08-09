@@ -1,0 +1,30 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my %file = args()
+    or die;
+
+# figure out how to restart sshd
+my $cmd = restart_cmd( service => 'sshd', reload_ok => 1 )
+  or die "can't figure out how to restart sshd";
+
+# different OSes use different sshd configs
+# the builder makes all of them since it doesn't know what we'll end up being
+my ( $os_name, $os_ver ) = ( get_os(), get_os_ver() );
+my $sshd_config = $os_name eq 'freebsd' && $os_ver =~ /^4/     ? $file{'sshd_config-freebsd4'}
+                : $os_name eq 'freebsd' && $os_ver =~ /^(6|7)/ ? $file{'sshd_config-freebsd'}
+                : $os_name eq 'linux'                          ? $file{'sshd_config-linux'}
+                :                                                undef;
+
+$sshd_config
+  or die "can't figure out which sshd_config to use";
+
+install_file(
+    from    => $sshd_config,
+    to      => "/etc/ssh/sshd_config",
+    pretest => "/usr/sbin/sshd -tf {}",
+    cmd     => $cmd,
+);

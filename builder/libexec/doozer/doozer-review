@@ -1,0 +1,100 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer review <filename>:
+#   - lock on "checkout" just in case
+#   - use BStore->get_raw and BStore->review_raw to review the raw file
+
+use strict;
+use warnings;
+
+use File::Temp ();
+use Getopt::Long;
+use Log::Log4perl qw/:easy/;
+use Text::Diff ();
+use Chisel::Builder::Engine;
+use Chisel::CheckoutPack;
+use Regexp::Chisel qw/:all/;
+
+# become chisel user if we started out as root
+if( $< == 0 ) {
+    exec( "/bin/setuidgid", "chisel", $0, @ARGV );
+    die "exec failed: $!\n";
+}
+
+# confirm we're chisel
+if( $< != getpwnam('chisel') ) {
+    die "please run this as chisel\n";
+}
+
+# command line arguments
+my $USAGE = "usage: doozer review [-n|--dryrun] [-v|--verbose] [filename]\n";
+my %opt;
+GetOptions( \%opt, "v|verbose", "n|dryrun" ) or die $USAGE;
+
+my $raw_name;
+if( @ARGV == 1 ) {
+    $raw_name = shift @ARGV;
+} else {
+    die $USAGE;
+}
+
+my $engine = Chisel::Builder::Engine->new( log4perl_level => ( $opt{'v'} ? 'TRACE' : 'INFO' ) );
+$engine->setup;
+
+# Lock on 'checkout' to be safe about any possible conflict with doozer-checkout
+INFO "Grabbing doozer-checkout lock (may take a few minutes)";
+my $lockfd = $engine->lock( 'checkout', block => 1 );
+
+# Pull raw file
+my $cp = Chisel::CheckoutPack->new( filename => $engine->config('var') . '/checkout/checkout.tar' );
+my $cpe = $cp->extract;
+my $raw_obj = $cpe->raw( $raw_name );
+
+if( ! $raw_obj || ! defined $raw_obj->data_pending ) {
+    FATAL "$raw_name: This file is not up for review!";
+    exit 1;
+}
+
+# Generate a diff between $raw_obj->data and $raw_obj->data_pending
+INFO "$raw_name: Computing diff for your review!";
+
+my $txt_old = $raw_obj->data;
+my $txt_new = $raw_obj->data_pending;
+
+if( defined $txt_old ) {
+    print Text::Diff::diff( \$txt_old, \$txt_new );    
+} else {
+    print Text::Diff::diff( \do{my $anon=''}, \$txt_new );
+}
+
+if( $opt{'n'} ) {
+    exit 0;
+}
+
+print "\n";
+
+print STDERR "$raw_name: This diff FAILED validation, so please review it carefully!\n";
+print STDERR "$raw_name: Does the diff look okay (answer \"yes\" if so)? ";
+my $user_response = <STDIN>;
+
+if( $user_response && $user_response eq "yes\n" ) {
+    INFO "$raw_name: About to update to the new version";
+    $cpe->review_raw( $raw_obj );
+    $cp->write_from_fs( $cpe->stagedir );
+    INFO "$raw_name: Update is done!";
+} else {
+    INFO "$raw_name: OK, we're not going to change anything.";
+    INFO "$raw_name: This file will remain up for review until it is fixed at the source.";
+}
+
+exit 0;

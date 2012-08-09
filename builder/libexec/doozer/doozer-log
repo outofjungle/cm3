@@ -1,0 +1,118 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+use Date::Manip;
+use Getopt::Long;
+
+if( !@ARGV ) {
+    # no args: just print list of valid log-groups
+    my @logd = grep { -d $_ } glob "/var/logs/chisel/*.d";
+    s!.*/!!      for @logd;
+    s!\.d$!!     for @logd;
+    s!^doozer_!! for @logd;
+    print "$_\n" for sort @logd;
+    exit 0;
+}
+
+my %opt;
+GetOptions( \%opt, "help", "all", "last", "since=s", "until=s", "cat", "list", "tail" )
+  or usage();
+
+usage() if $opt{'help'};
+
+# need 1 log-group
+usage() if @ARGV != 1;
+my $wantlog = shift @ARGV;
+my $wantlogd =
+    -d "/var/logs/chisel/$wantlog.d"        ? "/var/logs/chisel/$wantlog.d"
+  : -d "/var/logs/chisel/doozer_$wantlog.d" ? "/var/logs/chisel/doozer_$wantlog.d"
+  :                                           "";
+usage() if !$wantlogd;
+
+my $n_actmodes = ( $opt{'cat'} ? 1 : 0 ) + ( $opt{'list'} ? 1 : 0 ) + ( $opt{'tail'} ? 1 : 0 );
+my $n_selectmodes = ( $opt{'last'} ? 1 : 0 ) + ( $opt{'all'} ? 1 : 0 ) + ( ( $opt{'since'} || $opt{'until'} ) ? 1 : 0 );
+
+usage() if $n_actmodes > 1;
+usage() if $n_selectmodes > 1;
+
+# default act mode: cat
+if( !$n_actmodes ) {
+    $opt{'cat'} = 1;
+}
+
+# default select mode: last day
+if( !$n_selectmodes ) {
+    $opt{'since'} = '24 hours ago';
+}
+
+my @selected;
+
+if( $opt{'all'} ) {
+    @selected = glob "$wantlogd/@* $wantlogd/current";
+} elsif( $opt{'last'} ) {
+    @selected = glob "$wantlogd/current";
+} elsif( $opt{'since'} || $opt{'until'} ) {
+    my $since;
+    if( $opt{'since'} ) {
+        $since = UnixDate( $opt{'since'}, "%s" ) or die "invalid date: $opt{since}";
+    }
+
+    my $until;
+    if( $opt{'until'} ) {
+        $until = UnixDate( $opt{'until'}, "%s" ) or die "invalid date: $opt{until}";
+    }
+
+    my %mtime = map { $_ => ( stat $_ )[9] } glob "$wantlogd/@* $wantlogd/current";
+
+    my $prev_t = 0;
+    foreach my $f ( sort { $mtime{$a} <=> $mtime{$b} } keys %mtime ) {
+        my $since_ok = !$since || $mtime{$f} > $since;
+        my $until_ok =
+            !$until
+          || $mtime{$f} < $until
+          || ( $prev_t && $prev_t < $until );
+
+        if( $since_ok && $until_ok ) {
+            push @selected, $f;
+        }
+
+        $prev_t = $mtime{'f'};
+    }
+}
+
+@selected = sort grep { -f $_ } @selected;
+
+if( !@selected ) {
+    die "no logs selected\n";
+}
+
+if( $opt{'cat'} ) {
+    exec 'cat', @selected;
+    die "exec: $!\n";
+} elsif( $opt{'list'} ) {
+    print "$_\n" for @selected;
+    exit 0;
+} elsif( $opt{'tail'} ) {
+    exec 'tail', '-F', $selected[-1];
+    die "tail: $!\n";
+}
+
+sub usage {
+    die <<'EOT'
+usage: doozer log   (list log-groups)
+       doozer log [ -all | -last | [-since <datetime>] [-until <datetime>] ]
+                  [ -cat | -list | -tail ] <log-group>
+EOT
+}

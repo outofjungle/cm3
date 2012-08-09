@@ -1,0 +1,3 @@
+#!/bin/sh
+
+exec /var/chisel/bin/multilog  t s16777215 n3  ./chisel_client.logs

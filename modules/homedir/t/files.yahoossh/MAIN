@@ -1,0 +1,8 @@
+lino:
+    - ssh-rsa BlahBlah lino
+
+notarealuser:
+    - ssh-rsa BlahBlah notarealuser
+
+foo:
+    - ssh-rsa BlahBlah foo

@@ -1,0 +1,57 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use YAML::XS;
+use Chisel::SanityCheck qw/:all/;
+use Regexp::Chisel qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ MAIN / ],
+    max   => [ qw/ MAIN symlink / ],
+);
+
+# basic checks on the 'MAIN' file (authorized_keys indexed by user)
+# clients use YAML::Tiny, but we're loading this with YAML::XS because it's way faster
+
+# the expected format is something like
+#
+# lino:
+#  - 'ssh-rsa keyA'
+#  - 'ssh-dss keyB'
+
+my $authorized_keys = YAML::XS::LoadFile( $files{MAIN} );
+ref $authorized_keys eq 'HASH' or die "homedir/MAIN must be a yaml map\n";
+foreach my $user (keys %$authorized_keys) {
+    $user =~ /^$RE_CHISEL_username\z/ or die "user '$user' is not a valid username\n";
+    
+    my $keys = $authorized_keys->{$user};
+    ref $keys eq 'ARRAY' or die "user '$user' is not an array\n";
+    
+    foreach my $key (@$keys) {
+        if( ref $key ) {
+            die "user '$user' is not an array of strings\n";
+        }
+    }
+}
+
+# syntax check on the 'symlink' file (useful for linking history files to /dev/null etc)
+
+# the expected format is something like
+# 
+# .mysql_history /dev/null
+# .bash_history /dev/null
+
+if( $files{symlink} ) {
+    my @symlink = split "\n", read_file( filename => $files{symlink} );
+    foreach my $s (@symlink) {
+        next if $s =~ /^#/;
+        next if $s =~ /^\s*$/;
+        die "bad 'symlink' line: $s\n" unless $s =~ /^(force\s|)\s*([\w\.]+)\s+([\w\.\/]+)$/;
+    }
+}
+
+exit 0;

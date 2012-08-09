@@ -1,0 +1,61 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use File::Temp qw/tempfile/;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ sshd_config-linux sshd_config-freebsd /],
+    max   => [qw/ sshd_config-linux sshd_config-freebsd sshd_config-freebsd4 /],
+);
+
+# create a fake hostkey, which is needed because sshd -t checks the hostkey and we're not running as root
+# this key is only used to fake out sshd -t, it's not associated with any actual host
+my $fake_hostkey = <<EOT;
+-----BEGIN RSA PRIVATE KEY-----
+MIICXAIBAAKBgQDJZK69LYAGEZ207EUoe+qmJys9okF7huV/nQ1jpl3VHLj5zLMX
+2L/tYi4FVh04JoXfal+WZ9JlNOIzUoO8qAlaaVhRPrG/FZyXiP5Di3unJ9lyJI1f
+vDKdkILyKZPuTHM8UqGUr4kQlMzEAS+l2ArutICJo6gXMpZORMu+BZqY9wIBIwKB
+gG1T6dRpKD3PDHgofVB9yIYVQ1v4/vnqJNA/UGlLr0fNw4BKjRuS69ijAwo2D9yn
+MrscfQiBgNfa4THNtTqHGwQ61dt/hRxTo8+sP8XoX1GuLshNnfiNI8o3aWxrEXmb
+oFxoKWkTTZr3K+iOa9wzMqz9O8GOZ0if4N6S1QoCg4qLAkEA8jV2FHuKCTRiB0eR
+cNh6IFmpao+kpHNWsptkd/cbv8sIw+knRnYZaZMpUngd/zC/vl7wkuFurk0dXib8
+NdEldwJBANTcRtOEXy73FURpo9pfYKuwV785DC6zPib87mWlDXtzU3CHF6PU2bTA
+TJrjXgFG8EwR1jLf+lBMpF7mbAENCIECQQCmFgfTh+mf6WfKejfYWe1YAvfUCroK
+XbfK7jZDoiGoFjHlbK03oXCC6JFdHyqDGh0U02Mi47mcF58b/Xm+gMk7AkEAkfYh
+8CBBRMavf15hulAHxi/HJAncd8td0Zd+5p0QjyqCW8pZWmYRoIPcwfr+oco+YAw7
+G5JFPmBwthpYsENziwJBALlzU5KoVSRVwM4u1VAOyXufBSsQZH866PPW1/KK98E+
+K40YYugPLTssoIi95l4s8vT1g19tBqlCLL+ml10TDrs=
+-----END RSA PRIVATE KEY-----
+EOT
+
+my ( $fake_hostkey_fd, $fake_hostkey_path ) = tempfile();
+print $fake_hostkey_fd $fake_hostkey;
+close $fake_hostkey_fd;
+
+# check each file
+foreach my $f (keys %files) {
+    my $sz = -s $files{$f};
+    
+    if( $sz < (1<<8) ) {
+        die "file too short ($sz bytes): $f\n";
+    }
+    
+    if( $sz > (1<<20) ) {
+        die "file too long ($sz bytes): $f\n";
+    }
+    
+    my @sshd_t = ( '/usr/sbin/sshd', '-t', '-f', $files{$f}, '-h', $fake_hostkey_path );
+    system( @sshd_t );
+    if($?) {
+        die "sshd -t failed: $f\n";
+    }
+}
+
+unlink $fake_hostkey_path;
+
+exit 0;

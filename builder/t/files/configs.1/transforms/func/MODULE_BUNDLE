@@ -1,0 +1,5 @@
+/scripts/passwd:
+    - use passwd.1
+
+passwd:
+    - use passwd.bundle/base

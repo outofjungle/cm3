@@ -1,0 +1,18 @@
+motd:
+    - append hello world
+
+sudoers:
+    - append bob
+
+/files/passwd/MAIN:
+    - append MAIN
+
+passwd/MAIN:
+    - append MAIN
+
+passwd:
+    - add bob
+    - add carol
+
+/scripts/passwd:
+    - use passwd.1

@@ -1,0 +1,20 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args() or die;
+
+check_files(
+    files => \%files,
+    min   => [ qw/ MAIN / ],
+    max   => [ qw/ MAIN / ],
+);
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+if( ! @contents ) {
+    die "zero-length emagent file\n";
+}
+
+exit 0;

@@ -1,0 +1,52 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my $re_ip = qr{\d{1,3}(?:\.\d{1,3}){3}};
+my $re_server = qr{^\s*server\s+($re_ip)\s*$};
+my $re_drift = qr{^\s*drift\s+($re_ip)\s*$};
+
+# restrict ip | "default ignore"
+my $re_restrict_param = qr{$re_ip|(?:default ignore)};
+my $re_restrict = qr{^\s*restrict\s+($re_ip)\s*$};
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ MAIN / ],
+    max   => [ qw/ MAIN / ],
+);
+
+my $data = read_file( filename => $files{MAIN} );
+
+# "parse" file
+my $flag_def_res = 0;
+my (@servers, @restricts, @drifts);
+foreach my $line (split /\n/, $data) {
+    if ($line =~ m/$re_server/) {
+        push @servers, $1;
+    } elsif ($line =~ m/$re_restrict/) {
+        if ($1 =~ m/$re_ip/) {
+            push @restricts, $1;
+        } elsif ($1 =~ m/default ignore/) {
+            $flag_def_res = 1;
+        } else {
+            die "bad restrict line found";
+        }
+    } elsif ($line =~ m/$re_drift/) {
+        push @drifts, $1;
+    }
+}
+
+foreach my $server (@servers) {
+    die "server without a matching restrict line found" unless grep { $_ eq $server } @restricts;
+}
+
+unless (scalar @drifts == 1) {
+    die "Not exactly one drift file specified";
+}
+
+exit 0;

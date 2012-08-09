@@ -1,0 +1,5 @@
+#!/bin/sh
+SANITY_PORT=44999
+exec 2>&1
+echo "sanity_dt started up"
+exec /bin/setuidgid chiseldata /bin64/tcpserver -v -x /var/chisel/sanity.cdb 0 "$SANITY_PORT" /bin/sanity

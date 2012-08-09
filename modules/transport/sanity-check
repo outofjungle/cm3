@@ -1,0 +1,27 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args() or die;
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+if( ! @contents ) {
+    die "zero-length config.yaml file\n";
+}
+
+# List of allowed commands as listed in modprobe.conf (5) man page
+my %commands = (  transport_host => 1,
+		  transport_port => 1,
+                  transport_proto => 1,
+               );
+ 
+foreach (@contents) {
+    next if /^#/;
+    next if /^$/;
+    /(\w+).+/;
+    die "Error: Unknown COMMAND used: $1" if ! ( exists $commands{$1} );
+}
+
+exit 0;

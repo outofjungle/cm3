@@ -1,0 +1,6 @@
+lino:
+    - ssh-rsa BlahBlah lino
+    - not: a string
+
+notarealuser:
+    - ssh-rsa BlahBlah notarealuser

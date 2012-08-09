@@ -1,0 +1,307 @@
+#!/usr/bin/perl -wT
+
+# we know that PATH and PERL5LIB are clean in our environment, so convince perl to use them
+BEGIN {
+    ( $ENV{PATH} ) = ( $ENV{PATH} =~ /^(.*)$/ );
+    ( $ENV{PERL5LIB} ) = ( $ENV{PERL5LIB} =~ /^(.*)$/ );
+    unshift @INC, split /:/, $ENV{PERL5LIB};
+}
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+run();
+die "run failed!\n";    # run() should always exit, good or bad
+
+sub run {
+    my %file = args()
+      or die;
+
+    # this script supports two different styles of service management,
+    my $style;
+
+    if( -x "/sbin/chkconfig" && -x "/sbin/service" && -d "/etc/init.d" && $^O eq 'linux' ) {
+        # redhat-style (chkconfig + service)
+        $style = "redhat";
+    } elsif( -d "/etc/rc.d" && -f "/etc/rc.conf.local" && $^O eq 'freebsd' && get_os_ver() =~ /^(\d+)\./ && $1 >= 6 ) {
+        # freebsd 6+ style
+        $style = "freebsd";
+    } else {
+        # do nothing
+        warn "can't figure out how to manage services on this host\n";
+        exit 0;
+    }
+
+    # the file will look like:
+    # snmpd on
+    # sshd on
+    # pushsshd off
+
+    # services that are OK to control are whitelisted here by OS
+    # this also contains the canonical name of each service (aliases are allowed so people don't have to know the exact name)
+    my %service_whitelist = (
+        'redhat' => {
+            'cron'      => 'crond',
+            'crond'     => 'crond',
+            'ntpd'      => 'ntpd',
+            'pushsshd'  => 'pushsshd',
+            'snmpd'     => 'snmpd',
+            'sshd'      => 'sshd',
+            'autofs'    => 'autofs',
+            'cpuspeed'  => 'cpuspeed',
+            'nfslock'   => 'nfslock',
+            'portmap'   => 'portmap',
+            'nscd'      => 'nscd',
+            'rpcbind'   => 'rpcbind',
+            'rpcgssd'   => 'rpcgssd',
+            'rpcidmapd' => 'rpcidmapd',
+            'netfs'     => 'netfs',
+        },
+
+        'freebsd' => {
+            'cron'     => 'cron',
+            'crond'    => 'cron',
+            'ntpd'     => 'ntpd',
+            'pushsshd' => 'pushsshd',
+            'snmpd'    => 'snmpd',
+            'sshd'     => 'sshd',
+            'amd'      => 'amd',
+            'rpcbind'  => 'rpcbind',
+        },
+    );
+
+    # doubles are allowed, and the later one wins. so let's figure it all out up front.
+
+    my %services;
+    foreach my $service_line ( split "\n", read_file( filename => $file{'MAIN'} ) ) {
+        if( $service_line =~ /^\s*(\w+)\s+(on|off)\s*$/ ) {
+            my ( $service, $service_want ) = ( $1, $2 );
+
+            # check the whitelist/canonical-name name
+            my $service_cname = $service_whitelist{$style}{$service};
+
+            # skip silently if the service is not whitelisted
+            if( !$service_cname ) {
+                next;
+            }
+
+            # check for this service on the box
+            if( !service_exists( $style, $service_cname ) ) {
+                warn "service $service missing\n";
+                next;
+            }
+
+            # don't let sshd be disabled
+            if( $service_cname eq 'sshd' && $service_want ne 'on' ) {
+                warn "service $service cannot be disabled\n";
+                next;
+            }
+
+            $services{$service_cname} = ( $service_want eq 'on' ? 1 : 0 );
+        } else {
+            warn "service line in control file is not valid: $service_line\n";
+        }
+    }
+
+    # now we have one entry for each service in %services
+
+    # first, set desired state (chkconfig, rc.conf)
+    my @services_chkconfig = chkconfig( $style, \%services );
+
+    # next, set actual state (running processes) 
+    # unless we are reconfigure-only (i.e. don't start serices at host install time)
+    my @services_updown;
+    if( ! $ENV{'chisel_RECONFIGURE_ONLY'} ) {
+        if( ! $ENV{'CHISEL_DRY_RUN'} ) {
+            @services_updown = updown( $style, \%services );
+        } else {
+            dryrun( "updown: ", join( ", ", sort keys %services ) );
+        }
+    }
+
+
+    # Do some accounting 
+    if( (       scalar @services_updown == scalar @services_chkconfig
+            and scalar @services_chkconfig == scalar keys %services 
+            and !$ENV{chisel_RECONFIGURE_ONLY} 
+            and !$ENV{'CHISEL_DRY_RUN'} 
+        )
+        or
+        (       scalar @services_chkconfig ==  scalar keys %services
+            and ( $ENV{chisel_RECONFIGURE_ONLY} or $ENV{'CHISEL_DRY_RUN'} )
+        ) 
+      )
+    {
+        exit 0;
+    } else {
+        exit 255;
+    }
+}
+
+sub service_exists {
+    my ( $style, $service ) = @_;
+
+    if( $style eq 'redhat' && -x "/etc/init.d/$service" ) {
+        return 1;
+    } elsif( $style eq 'freebsd' && -x "/etc/rc.d/$service" ) {
+        return 1;
+    }
+
+    return 0;
+}
+
+# attempt to configure desired state of services
+# return the names of services we managed to do it for
+sub chkconfig {
+    my ( $style, $services_ref ) = @_;    # should be a hash with keys like "sshd" => 1
+
+    my %services = %$services_ref;
+    my @ok;
+
+    my $rc_conf_local;
+    my $rc_conf_local_append = '';
+
+    if( $style eq 'freebsd' ) {
+        # apparently /etc/rc.conf.local is not normally flock(2)'d or locked
+        # in any way, so doing a read/change/write is "fine"
+        $rc_conf_local = read_file( filename => '/etc/rc.conf.local' );
+    }
+
+  SERVICE: foreach my $service ( sort keys %services ) {
+        if( $style eq 'redhat' ) {
+            # make sure the service is referenced in all runlevels
+            if( ! $ENV{'CHISEL_DRY_RUN'} ) {
+                system( "/sbin/chkconfig", "--add", $service );
+                if( $? ) {
+                    warn "[FAIL] /sbin/chkconfig --add $service\n";
+                    next SERVICE;
+                }
+            } else {
+                dryrun( "system /sbin/chkconfig --add $service" );
+            }
+
+            # make sure it has the proper on/off state
+            my $want_onoff = $services{$service} ? 'on' : 'off';
+            if( ! $ENV{'CHISEL_DRY_RUN'} ) {
+                system( "/sbin/chkconfig", $service, $want_onoff );
+                if( $? ) {
+                    warn "[FAIL] /sbin/chkconfig $service $want_onoff\n";
+                    next SERVICE;
+                }
+            } else {
+                dryrun( "system /sbin/chkconfig $service $want_onoff" );
+            }
+
+            push @ok, $service;
+        } elsif( $style eq 'freebsd' ) {
+            # make sure the service has the proper yes/no state
+            my $yesno = $services{$service} ? 'YES' : 'NO';
+
+            # remove this service's setting from $rc_conf_local and add it to $rc_conf_local_append
+            $rc_conf_local = join '', map { "$_\n" }   # better than join "\n" since that will omit the trailing newline
+              grep { $_ ne "# service configuration written by chisel" } # remove "written by chisel" line -- we'll re-add it if necessary
+              grep { !/^\s*\Q$service\E_enable\s*=/ } # remove any line that enables or disables this service -- we'll re-add the one we like
+              split /\n/, $rc_conf_local;
+            $rc_conf_local_append ||= "# service configuration written by chisel\n";
+            $rc_conf_local_append .= "${service}_enable=\"$yesno\"\n";
+
+            push @ok, $service;
+        }
+    }
+
+    if( $style eq 'freebsd' ) {
+        # create the combined file by cleaning up newlines a bit and concatenating
+        $rc_conf_local =~ s/\n+$//;
+
+        write_file(
+            filename => "/etc/rc.conf.local",
+            contents => "$rc_conf_local\n\n$rc_conf_local_append",
+            pretest  => "sh -n {}",
+        );
+    }
+
+    return @ok;
+}
+
+sub updown {
+    my ( $style, $services_ref ) = @_;    # should be a hash with keys like "sshd" => 1
+
+    # some hacks are needed on various rhel releases.
+    my $rhelver;
+    if( $style eq 'redhat' ) {
+        $rhelver = get_redhat_release();
+    }
+
+    my %services = %$services_ref;
+    my @ok;
+
+  SERVICE: foreach my $service ( sort keys %services ) {
+        # netfs is chkconfig-only, never start/stop
+        if( $service eq 'netfs' ) {
+            push @ok, $service;
+            next SERVICE;
+        }
+
+        my $rc =
+            $style eq 'redhat'  ? "/sbin/service \Q$service\E"
+          : $style eq 'freebsd' ? "/etc/rc.d/\Q$service\E"
+          :                       undef;
+
+        if( $rc ) {
+            # freebsd rc scripts will ignore enable="YES" if prefaced by 'one'
+            # (this is what we want for status + stop, but not start; the idea is that
+            # we want to be able to discern status of a service, and stop it, if it's disabled.)
+            my $onemaybe = $style eq 'freebsd' ? 'one' : '';
+
+            # determine if the service is running or not, using the rc script
+            my $is_running;
+
+            if( $style eq 'redhat' && $service eq 'autofs' && $rhelver < 5 ) {
+                # autofs on rhel4 has a ridiculous init.d script.
+                next SERVICE unless -x "/etc/init.d/functions" && -x "/usr/sbin/automount";
+                $is_running =
+                  !system( "sh", "-c", ". /etc/init.d/functions; status automount 2>/dev/null 1>/dev/null" );
+            } elsif( $style eq 'redhat' && $service eq 'nfslock' && $rhelver < 6 ) {
+                # nfslock script is buggy at least through rhel 5u6
+                # see: https://bugzilla.redhat.com/show_bug.cgi?id=534133
+                next SERVICE unless -x "/etc/init.d/functions";
+                $is_running =
+                  !system( "sh", "-c", ". /etc/init.d/functions; status rpc.statd 2>/dev/null 1>/dev/null" );
+            } else {
+                # zero = running, nonzero = not running. so take the opposite for a true/false value we can test against
+                $is_running = !system( "sh", "-c", "$rc ${onemaybe}status 2>/dev/null 1>/dev/null" );
+            }
+
+            # stop the service if:
+            #  - we want it stopped
+            #  - "status" indicates it's running (zero exit)
+
+            if( !$services{$service} && $is_running ) {
+                warn "service $service should not be up, trying to kill it\n";
+                system( "sh", "-c", "$rc ${onemaybe}stop" );
+                if( $? ) {
+                    warn "[FAIL] $rc ${onemaybe}stop\n";
+                    next SERVICE;
+                }
+            }
+
+            # start the service if:
+            #  - we want it started
+            #  - "status" indicates it's not running (nonzero exit)
+
+            if( $services{$service} && !$is_running ) {
+                warn "service $service is down but should be up, trying to raise it\n";
+                system( "sh", "-c", "$rc start" );
+                if( $? ) {
+                    warn "[FAIL] $rc start\n";
+                    next SERVICE;
+                }
+            }
+
+            push @ok, $service;
+        }
+    }
+
+    return @ok;
+}

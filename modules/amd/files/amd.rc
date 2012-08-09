@@ -1,0 +1,3 @@
+# This passes args to amd at start time.
+# Installed to /etc/rc.conf.d/amd
+amd_flags="-F /etc/amd.conf"

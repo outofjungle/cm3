@@ -1,0 +1,99 @@
+#!/usr/bin/perl
+#
+# Format
+# /etc/chisel/config.yaml
+# transport_host: <fqdn>
+# transport_port: 4443
+# transport_proto: https
+
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+use URI::Split qw(uri_split);
+use Data::Dumper;
+
+
+my $filename = "/var/chisel/data/" . args() or die;
+
+my $file = read_file( filename => $filename) or die;
+
+$file =~ s/\"//g;
+$file =~ s/transport_port/transport_port:/gi;
+$file =~ s/transport_host/transport_host:/gi;
+$file =~ s/transport_proto/transport_proto:/gi;
+
+my $logfile = `cat /var/chisel/logs/chisel_client_sync.log`;
+my $good_transport = "https://transport:4443";
+my ($scheme, $auth, $time, $status, $trans, $junk);
+$scheme = $auth = $time = $status = $trans = $junk = "";
+
+my @array = split("\n",$logfile);
+
+my $timenow = time();
+# Time now - 3 hours
+my $timethen = $timenow - (3 * 3600);
+
+my ($goodcount, $goodtime, $failedcount, $failedtime);
+$goodcount = $goodtime = $failedcount = $failedtime = 0;
+
+sub decode_tai64 ($) {
+    my $tok = shift;
+    my $secs = 0;
+    my $FUZZ = 10;
+    if (substr($tok,0,9) eq '@40000000') {
+        $secs = hex(substr($tok,9,8)) - $FUZZ;
+    }
+    return $secs;
+}
+
+my @useable = grep /version OK|fetch failed/, @array;
+
+foreach (@useable) {
+	chomp($_);
+	($time,$junk,$junk,$status,$trans,$junk,$junk) = split(/ /,$_);
+	$time = decode_tai64($time);
+	$status =~ s/://g;
+	# So we are looking at our time window here of logs to check.
+	if ( ($time >= $timethen) && ($time <= $timenow) ) {
+	
+	# Status, check if all statuses were bad and if good is newer than all the bad.
+	    ($scheme, $auth, $junk, $junk, $junk) = uri_split($trans);
+	   
+            # We don't increment the counter if the failed transport was https://transport:443/
+	    if ( ($status =~ /failed/i) && ("$scheme://$auth" !~ /$good_transport/ ) ) {  
+		$failedcount++;
+		$failedtime=$time;
+		#print "failed count inc\n";
+		}
+	    if ($status =~ /OK/i) {	
+		#print "OK count\n";
+		# If our last successful time was newer than our last failed time
+		$goodtime = $time;
+		if ($time >= $failedtime) {
+			#print "Good count inc\n";
+			$goodcount++;
+			$failedcount = 0;
+                }
+            }
+	    #print "time: " . scalar(localtime($time)). " status: $status  transport: $trans\n";
+	}	
+
+}
+
+#print "Failed count: $failedcount   Failtime = " . scalar(localtime($failedtime)) . " Good count: $goodcount Last Goodtime: " . scalar(localtime($goodtime)) . "\n";
+
+# If all was good, we just install our config.yaml.
+if ( ($goodcount > 0) || ($failedcount == 0 ) )  {
+	write_file(
+ 		   contents => $file,
+   		   filename => "/etc/chisel/config.yaml",
+	);
+        exit 0;
+} else {
+        print "Too many unsuccessful attempts to hit transport in config.yaml.  removing config to revert back to default transport.\n";
+	unlink("/etc/chisel/config.yaml");	
+	exit 0;
+}
+
+# Next run w/ a good sync, it'll put the yaml file back if it's been found on the transport.

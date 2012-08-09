@@ -1,0 +1,30 @@
+#!/var/chisel/bin/perl -w
+
+use strict;
+use Getopt::Long qw/:config require_order gnu_compat/;
+
+# this is a tiny yet correct implementation of a chisel script
+
+my %opt = ( 'interval' => "Interval to wait after running",
+            'h|help'   => "Display this help" );
+
+my %o;
+die unless GetOptions( \%o, "interval", "h|help" );
+die if($o{h});
+
+if($o{interval}) {
+    print "300\n";
+    exit 0;
+}
+
+my $dir = shift @ARGV or die;
+die unless -d $dir;
+
+my $file = "$dir/MAIN";
+die unless -f $file;
+
+# this env var gets set by the test framework
+my $out = $ENV{'chiselTEST_OUTDIR'};
+die unless $out && -d $out;
+
+system( "cp", $file, "$out/OUT" );

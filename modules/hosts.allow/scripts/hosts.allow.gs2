@@ -1,0 +1,34 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+my %file = args()
+  or die;
+
+# first read the file from the builder
+
+my $contents = read_file( filename => $file{MAIN} );
+
+# /etc/hosts.allow.local (on the client) needs to be added between this section:
+# BEGINNING OF CUSTOMIZATION SECTION
+# DO NOT DELETE OR MODIFY THE NEXT LINE
+# hosts.allow.local will be inserted after this line
+# END OF CUSTOMIZATION SECTION
+
+if( my $local_post = eval { read_file( filename => "/etc/hosts.allow.local" ); } ) {
+    $contents =~ s/^(# hosts\.allow\.local will be inserted after this line.*)$/$1\n$local_post\n/m;
+}
+
+# /etc/hosts.allow-pre.local (on the client) needs to be added before the first non-comment line.
+
+if( my $local_pre = eval { read_file( filename => "/etc/hosts.allow-pre.local" ); } ) {
+    $contents =~ s/^([^#\s])/\n$local_pre\n$1/m;
+}
+
+# write it out
+write_file(
+    contents  => $contents,
+    filename  => "/etc/hosts.allow",
+    directory => "/etc",
+);

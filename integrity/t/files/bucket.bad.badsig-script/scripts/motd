@@ -1,0 +1,13 @@
+#!/var/chisel/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+# new line added
+
+my $file = args()
+  or die;
+
+install_file(template => 1,
+             from => $file,
+             to => "/etc/motd");

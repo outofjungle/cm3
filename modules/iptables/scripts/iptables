@@ -1,0 +1,67 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+# linux-only module
+exit 1 unless $^O eq 'linux';
+
+# build "iptables-save" style output.
+# note: currently this only supports the "filter" table and a
+# default-accept policy.
+my $iptables_want = read_file( filename => $file );
+chomp( $iptables_want );
+$iptables_want = <<EOT;
+*filter
+$iptables_want
+COMMIT
+EOT
+
+# fetch current iptables rules
+my @iptables_now =
+  grep { !/^\#/ }    # remove comments
+  qx[/sbin/iptables-save];
+
+if( $? ) {
+    die "/sbin/iptables-save failed! (status=$?)\n";
+}
+
+# the output looks like this:
+#    *filter
+#    :INPUT ACCEPT [1054:97555]
+#    :FORWARD ACCEPT [0:0]
+#    :OUTPUT ACCEPT [748:116953]
+#    :DUMP - [0:0]
+#    -A INPUT -s 209.131.62.115/32 -p tcp -m tcp --dport 80 -j ACCEPT
+#    -A INPUT -p tcp -m tcp --dport 80 -j REJECT --reject-with icmp-port-unreachable
+#    COMMIT
+
+for my $str ( @iptables_now ) {
+    # the stuff in brackets are packate and byte counters.
+    # we need to ignore them when determining if there has been a change.
+    $str =~ s/^(:INPUT \w+|:FORWARD \w+|:OUTPUT \w+|:DUMP \-) \[\d+:\d+\]/$1 \[0:0\]/;
+
+    # iptables-save can put useless whitespace at the end of a line.
+    $str =~ s/\s+\n\z/\n/;
+}
+
+my $iptables_now_str = join( "", @iptables_now );
+
+if( $iptables_now_str ne $iptables_want ) {
+    if( $ENV{'CHISEL_DRY_RUN'} ) {
+        $iptables_now_str =~ s/\n/\\n/g;
+        dryrun( "/sbin/iptables-restore $iptables_now_str" );
+    } else {
+        print "[RUN] /sbin/iptables-restore\n";
+        open my $ipt, "|-", "/sbin/iptables-restore";
+        print $ipt $iptables_want;
+        close $ipt;
+        if( $? ) {
+            die "/sbin/iptables-restore failed! (status=$?)\n";
+        }
+    }
+}

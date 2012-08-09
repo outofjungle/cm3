@@ -1,0 +1,54 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+chomp( my $tz = read_file( filename => $file ) );
+my $tzdata = "/usr/share/zoneinfo/$tz";
+
+die "no zoneinfo for tz $tz" unless -f $tzdata && -s $tzdata;
+
+if( $^O eq 'linux' ) {
+    # rhel uses /etc/sysconfig/clock + (if available) /usr/sbin/tzdata-update
+    my $clock = <<CLOCK;
+ZONE="$tz"
+UTC=true
+ARC=false
+CLOCK
+
+    my $clock_r = write_file(
+        filename  => "/etc/sysconfig/clock",
+        directory => "/etc/sysconfig",
+        contents  => $clock,
+    );
+
+    if( $clock_r or system("diff", "-q", $tzdata, "/etc/localtime")) {
+        # clock file changed OR /etc/localtime does not match $tzdata
+        if( -x "/usr/sbin/tzdata-update" && -f "/etc/localtime" ) {
+            if( ! $ENV{'CHISEL_DRY_RUN'} ) {
+                system( "/usr/sbin/tzdata-update" );
+            } else {
+                dryrun( "system /usr/sbin/tzdata-update" );
+            }
+        } else {
+            install_file(
+                template => 0,
+                from     => $tzdata,
+                to       => "/etc/localtime",
+                mode     => 0644,
+            );
+        }
+    }
+} else {
+    # all other OSes
+    
+    install_file(
+        template => 0,
+        from     => $tzdata,
+        to       => "/etc/localtime",
+        mode     => 0644,
+    );
+}

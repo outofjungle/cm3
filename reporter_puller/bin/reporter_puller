@@ -1,0 +1,104 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/bin/perl -w
+use strict;
+
+use DBI;
+use Getopt::Long;
+use JSON::XS;
+use LWP::UserAgent;
+use Log::Log4perl::Level;
+use Log::Log4perl;
+use POSIX qw/:sys_wait_h setuid setgid setsid/;
+use YAML::XS;
+use Chisel::Reporter::Puller;
+use Group::Client;
+
+sleep 1; # safeguard
+
+if( exists $ENV{reporter_puller__rank} and $ENV{reporter_puller__rank} eq 'slave' ) {
+    die "ERROR: This box is a secondary, this should only be run on the primary! exiting.";
+}
+
+# get password and drop privs ASAP
+
+
+my $mysql_pass = "password"
+
+my @chiseldata_pwd = getpwnam( 'chiseldata' ) or die "No such user 'chiseldata'";
+setsid() != -1            or die "Failed to setsid";
+setgid( $chiseldata_pwd[3] ) or die "Failed to setgid";
+setuid( $chiseldata_pwd[2] ) or die "Failed to setuid";
+# running as chiseldata
+
+# try to chdir somewhere reliable
+chdir("/");
+
+my %opt;
+GetOptions(\%opt, "conf=s" );
+
+my $conf_file = $opt{conf} ? $opt{conf} : "/conf/reporter_puller.conf";
+my $conf = YAML::XS::LoadFile( $conf_file )
+  or die "Could not load configuration file: $!";
+
+Log::Log4perl->init( \$conf->{log4perl} );
+my $root_logger = Log::Log4perl->get_logger( "" );
+$root_logger->info( "Starting reporter_puller" );
+
+# make db handle
+my $dsn = sprintf(
+    "DBI:mysql:host=%s:database=%s",
+    $conf->{db_host} ? $conf->{db_host} : "localhost",
+    $conf->{db_name} ? $conf->{db_name} : "chisel"
+);
+my $dbh = DBI->connect( $dsn, "chisel", $mysql_pass, { RaiseError => 1 } )
+  or $root_logger->logdie( "Couldn't connect to database: $dsn" );
+
+# get clusters
+my @clusters;
+my %roles_opts = $conf->{roles_url} ? ( baseuri => $conf->{roles_url} ) : ();
+my $rc = Group::Client->new( %roles_opts );
+eval {
+    my $ret = $rc->role( $conf->{clusters_role}, 'members' );
+    @clusters = @{ $ret->{members} };
+    $root_logger->info( sprintf( "Found %d clusters in %s", scalar @clusters, $conf->{clusters_role} ) );
+
+    1;
+} or do {
+    $root_logger->logdie( "Couldn't resolve " . $conf->{clusters_role} . ": $@" );
+};
+
+# kill process group on INT/HUP/TERM
+my $mypid = $$;
+$SIG{INT} = $SIG{HUP} = $SIG{TERM} = sub {
+    exit 1 if $$ != $mypid;
+    local $SIG{INT} = $SIG{HUP} = $SIG{TERM} = 'IGNORE';
+    kill TERM => -$$;
+    $root_logger->info( "reporter_puller terminating." );
+    exit 1;
+};
+
+eval {
+    my $puller = Chisel::Reporter::Puller->new(
+        dbh          => $dbh,
+        max_children => $conf->{max_children},
+        min_wait     => $conf->{min_wait},
+        timeout      => $conf->{timeout},
+        clusters     => \@clusters,
+        use_ssl      => $conf->{use_ssl},
+    );
+
+    $puller->run();
+
+    1;
+} or do {
+    $root_logger->logdie( "$@" );
+};

@@ -1,0 +1,144 @@
+#!/var/chisel/bin/perl -wT
+
+use strict;
+use warnings;
+use IO::Socket::INET ();
+use Socket ();
+use Sys::Hostname ();
+
+# set PATH, PERL5LIB to things that will work in our environment
+BEGIN {
+    $ENV{'PATH'} = '/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin';
+    $ENV{'PERL5LIB'} = '/var/chisel/lib/perl5/site_perl';
+    $ENV{'CURL_CA_BUNDLE'} = $ENV{'ZSYNC_CA_BUNDLE'} = '/share/cacerts/ca.crt';
+    unshift @INC, '/lib/perl5/site_perl';
+}
+
+use Getopt::Long qw/:config require_order gnu_compat/;
+
+my %opt;
+usage() unless GetOptions( \%opt, "which-http", "which-interface", "h|host=s", "p|port=s", "proto=s", "r|report=s%", "help" );
+
+# print usage message and exit if --help or mutually exclusive options are provided
+if( $opt{'help'} || ( 1 < grep { $_ } @opt{ qw/ which-http which-interface r / } ) ) {
+    usage();
+}
+
+# read in the config.yaml file if it exists
+my $conf;
+if( stat '/etc/chisel/config.yaml' ) {
+    require YAML::Tiny;
+    $conf = YAML::Tiny::LoadFile( '/etc/chisel/config.yaml' );
+}
+
+# use command line, config file, or default
+my $host =
+    $opt{h}
+    || eval {
+        $conf->{transport_host} || $conf->{transport}{host}
+    }
+    || "transport";
+
+chomp $host;
+
+# http port
+my $port =
+    $opt{p}
+    || eval {
+        $conf->{transport_port} || $conf->{transport}{port}
+    }
+    || "443";
+
+# http proto
+my $proto =
+    $opt{proto}
+    || eval {
+        $conf->{transport_proto} || $conf->{transport}{proto}
+    }
+    || "https";
+
+# check format and untaint
+if( $host =~ /^([\w\-\.]+)$/ ) {
+    $host = $1;
+} else {
+    die "Invalid host [$host]\n";
+}
+
+if( $port =~ /^(\d+)$/ ) {
+    $port = $1;
+} else {
+    die "Invalid port [$port]\n";
+}
+
+if( $proto =~ /^(http|https)$/ ) {
+    $proto = $1;
+} else {
+    die "Invalid proto [$proto]\n";
+}
+
+my $url = "$proto://$host:$port";
+
+if( $opt{'which-http'} ) {
+    # print base url
+    print "$url\n";
+    exit 0;
+} elsif( $opt{'which-interface'} ) {
+    my $want_interface = eval { pick_interface( $host, $port ) };
+    if( $want_interface ) {
+        print "$want_interface\n";
+    }
+    exit 0;
+} elsif ( $opt{r} ) {
+    # Backwards compatibility
+    my @cmd = ("/bin/chisel_send_report");
+    foreach my $k (keys %{$opt{r}}) {
+      my $v = $opt{r}->{$k};
+      push @cmd, "-r", "$k=$v";
+    }
+    exec(@cmd);
+    die "exec failed";
+} else {
+    # print hostname, not url
+    print "$host\n";
+}
+
+sub usage {
+    warn "usage: chisel_get_transport [-h host] [-p http_port] [--proto http_protocol] [--which-http|--which-interface]\n";
+    exit 1;
+}
+
+# since the transport wants us coming in over an IP corresponding to our
+# A record, try to pick one if possible.
+sub pick_interface {
+    my ( $from_host, $from_port ) = @_;
+
+    # Look up our own hostname
+    my $hostname = Sys::Hostname::hostname;
+    my ( undef, undef, undef, undef, @hostname_addrs ) = gethostbyname( "$hostname." );
+
+    # Convert to dotted-quad and remove localhost
+    @hostname_addrs = map { Socket::inet_ntoa( $_ ) } @hostname_addrs;
+
+    # Capture ifconfig output
+    my @ifconfig;
+    if( $^O eq 'freebsd' ) {
+        # FreeBSD returns active interfaces only with ifconfig -u
+        @ifconfig = `ifconfig -u`;
+    } elsif( $^O eq 'linux' ) {
+        # Default should be active interfaces only
+        @ifconfig = `ifconfig`;
+    }
+
+    # Extract non-localhost IP addresses
+    my @ifconfig_addrs = grep { $_ ne '127.0.0.1' } map { /inet addr:(\S+)/ || /inet ([\d\.]+)/ ? $1 : () } @ifconfig;
+
+    # Prefer addresses in both @hostname_addrs and @ifconfig_addrs
+    if( @ifconfig_addrs > 1 and $? == 0 ) {
+        foreach my $addr ( @ifconfig_addrs ) {
+            return $addr if grep { $addr eq $_ } @hostname_addrs;
+        }
+    }
+
+    # No preferred interface
+    return;
+}

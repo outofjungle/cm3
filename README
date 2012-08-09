@@ -1,0 +1,15 @@
+All file copyrights licensed under the Perl Artistic License.
+See the accompanying LICENSE.Artistic files for terms.
+  
+Required Dependencies:
+
+curl - http://curl.haxx.se/
+openssl - http://openssl.org
+zsync - http://zsync.moria.org.uk/
+
+Optional Dependencies:
+
+libzookeeper - perl bindings for zookeeper
+             http://zookeeper.apache.org
+apache2 - http://httpd.apache.org
+

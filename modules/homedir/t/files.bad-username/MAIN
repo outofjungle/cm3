@@ -1,0 +1,5 @@
+lino:
+    - ssh-rsa BlahBlah lino
+
+invalid name:
+    - ssh-rsa BlahBlah notarealuser

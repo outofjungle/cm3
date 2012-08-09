@@ -1,0 +1,230 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use POSIX ();
+use Getopt::Long qw/ :config gnu_getopt /;
+
+# check options
+
+GetOptions( \my %opt, "h|host=s@", "H|Hostfile=s", "localhost", "force", "help" ) or usage();
+
+usage() if $opt{help};
+usage("please don't mix -h/-H and --localhost") if ( $opt{h} || $opt{H} ) && $opt{localhost};
+
+# get the list of hosts
+my @hosts;
+
+push @hosts, @{ $opt{h} } if $opt{h};
+
+if( $opt{H} ) {
+    if( $opt{H} eq '-' ) {
+        push @hosts, <STDIN>;
+    } else {
+        open my $fh, "<", $opt{H}
+          or die "open $opt{H}: $!";
+        
+        push @hosts, <$fh>;
+        close $fh;
+    }
+}
+
+chomp @hosts;
+
+# exit code we will eventually use
+my $exit = 0;
+
+# keep track of failures to print a report at the end
+my %exit_codes;
+
+# suck in the install script after __END__
+my $script = do { local $/; <DATA> };
+
+# options we'll send to the install script
+my @script_opts;
+push @script_opts, "--force"                            if $opt{force};
+
+if( $opt{localhost} ) {
+    system( "/usr/bin/perl", "-we", $script, "--", @script_opts );
+    $exit = $exit_codes{'localhost'} = ( POSIX::WIFEXITED($?) ? POSIX::WEXITSTATUS($?) : 255 );
+} else {
+    usage( "nothing to do!" ) if ! @hosts;
+    
+    # single-quote escape the installer script
+    $script =~ s/\'/\'\\\'\'/go;
+    $script = "'$script'";
+    
+    # add install script options
+    my $cmd = "sudo /usr/bin/perl -we $script -- " . join( " ", @script_opts );
+    
+    # escaping mumbo jumbo
+    $cmd =~ s/(\\|\$)/\\$1/go;
+    $cmd =~ s/\"/\"\\\"\"/go;
+    my $sh_cmd = "/bin/sh -c \"( $cmd )\"";    
+    
+    foreach my $h (@hosts) {
+        warn "=== $h ===\n";
+
+        system( "ssh", "-t", $h, "--", $sh_cmd );
+
+        # exit nonzero if anything fails
+        $exit = 1 if !POSIX::WIFEXITED($?) || POSIX::WEXITSTATUS($?);
+        $exit_codes{$h} = ( POSIX::WIFEXITED($?) ? POSIX::WEXITSTATUS($?) : 255 );
+    }
+}
+
+if( keys %exit_codes ) {
+    # print a report
+    print "\n=== REMOVE REPORT ===\n";
+    
+    # copied from %FAILCODE below
+    my %FAILCODE = (
+        'UNKNOWN'       => 40,    # some miscellaneous error
+        'NOT_INSTALLED' => 41,    # chisel isn't installed on this host
+        'FOUND_OTHER'   => 42,    # some non-chisel tool is already there and --force wasn't given
+        'GETOPT'        => 44,    # bad arguments provided
+        'WIPE'          => 45,    # unable to remove something
+        'DAEMONTOOLS'   => 46,    # unable to take daemontools service down
+    );
+
+    foreach my $h ( sort { $exit_codes{$a} <=> $exit_codes{$b} } keys %exit_codes ) {
+        # see %FAILCODE below
+        
+        my $exit = $exit_codes{$h};
+        my $reason =
+            $exit == 0                          ? 'successfully removed'
+          : $exit == $FAILCODE{'NOT_INSTALLED'} ? "skipped, chisel wasn't found on this host"
+          : $exit == $FAILCODE{'FOUND_OTHER'}   ? 'skipped, found non-chisel configuration tool'
+          : $exit == $FAILCODE{'GETOPT'}        ? 'getopt failure, check your options'
+          : $exit == $FAILCODE{'WIPE'}          ? 'unable to remove data on disk'
+          : $exit == $FAILCODE{'DAEMONTOOLS'}   ? 'unable to take down daemontools service'
+          :                                       'unknown error, suggest investigating';
+
+        print "$h: $reason\n";
+    }
+}
+
+exit $exit;
+
+sub usage {
+    my $msg = shift;
+    my $USAGE = <<EOT;
+usage: $0 ( -h hostname | -H hostfile | -H - ) [options]
+options:
+     -h <host>    remove chisel by sshing to "host"
+     -H <file>    remote chisel by sshing to hostnames in "file" (- for stdin)
+    --localhost   remove chisel on this host instead of sshing to another
+    --force       forcibly remove chisel yinst packages
+
+At least one line per host will be printed over stdout.
+
+EOT
+    
+    $USAGE = "$msg\n\n$USAGE" if $msg;
+    die "$USAGE";
+}
+
+__END__
+#!/usr/bin/perl -w
+
+use 5.005;
+use strict;
+use Getopt::Long;
+use POSIX ();
+use Sys::Hostname ();
+
+# override user's PATH to match the one our svscanboot would put in (minus /var/chisel/bin)
+$ENV{PATH} = "/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin:/usr/X11R6/bin";
+
+my %FAILCODE = (
+    'UNKNOWN'       => 40,    # some miscellaneous error
+    'NOT_INSTALLED' => 41,    # chisel isn't installed on this host
+    'FOUND_OTHER'   => 42,    # some non-chisel tool is already there and --force wasn't given
+    'GETOPT'        => 44,    # bad arguments provided
+    'WIPE'          => 45,    # unable to remove something
+    'DAEMONTOOLS'   => 46,    # unable to take daemontools service down
+);
+
+my %opt;
+GetOptions( \%opt, "force" ) or fail( 'GETOPT' );
+
+# is chisel installed?
+fail( 'NOT_INSTALLED' )
+  unless(
+    -e "/var/chisel"
+    && (   -e "/var/chisel/bin/chisel_client"
+        || -e "/var/chisel/bin/chisel_client_sync"
+        || -e "/var/chisel/data" )
+  );
+
+my @cmd;
+# take down daemontools services
+if ( -x "/var/chisel/sbin/dt-activate" ) {
+    @cmd = qw{ sudo /var/chisel/sbin/dt-activate -r };
+    system( @cmd );
+    if( $? ) {
+        warn "[FAILED] @cmd\n";
+        fail('DAEMONTOOLS');
+    }
+} else {
+    warn "[WARN] daemontools not found";
+}
+
+# deac packages
+my @pkgs = qw{ chisel_client_dt chisel_client chisel_client_sync };
+foreach my $p ( @pkgs ) {
+    @cmd = qw{ rpm -e};
+    push @cmd, $p;
+    system( @cmd );
+    unless( $? ) {
+        @cmd = qw{ rpm -e };
+        push @cmd, "-force" if $opt{force};
+        push @cmd, $p;
+        warn "[RUN] @cmd\n";
+        system( @cmd );
+        if( $? ) {
+            warn "[FAILED] @cmd\n";
+            fail( 'YINST' );
+        }
+    }
+}
+
+
+# remove /var/chisel
+@cmd = qw{ rm -rf /var/chisel };
+system( @cmd );
+if( $? ) {
+    warn "[FAILED] @cmd\n";
+    fail('WIPE');
+}
+
+# remove /etc/chisel
+@cmd = qw{ rm -fr /etc/chisel };
+system( @cmd );
+if( $? ) {
+    warn "[FAILED] @cmd\n";
+    fail('WIPE');
+}
+
+# append note to motd
+my $date = localtime;
+system( "echo '## chisel REMOVED BY chisel_remove ON $date' >> /etc/motd" );
+
+exit 0;
+
+sub fail {
+    my $string = shift;
+    my $code = $FAILCODE{ $string } || $FAILCODE{'UNKNOWN'};
+    exit $code;
+}
+

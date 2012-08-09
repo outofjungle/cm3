@@ -1,0 +1,7 @@
+{"mtime":1254174531,"mode":"0644","name":["NODELIST"],"type":"file","md5":"03c2328e513dd7756515b30d5181005b"}
+{"mtime":1254174531,"mode":"0644","name":["REPO"],"type":"file","md5":"7e47dd257254ddcf747110089826e0db"}
+{"mtime":1254174531,"mode":"0644","name":["VERSION"],"type":"file","md5":"2b49eb013e4d1c0492e29be23479e767"}
+{"mtime":1254174531,"mode":"0644","name":["files/motd/MAIN"],"type":"file","md5":"8efbaa71cd7df7858e84a34e8b63db2c"}
+{"mtime":1254174531,"mode":"0644","name":["files/sudoers/MAIN"],"type":"file","md5":"9b1c99ecd2db8f1c98ba92f8096791ce"}
+{"mtime":1254174531,"mode":"0755","name":["scripts/motd"],"type":"file","md5":"77c9898db315f8e9ed4db92c6e48750c"}
+{"mtime":1254174531,"mode":"0755","name":["scripts/sudoers"],"type":"file","md5":"97361b69d43a437f7804235aaee8a3ac"}

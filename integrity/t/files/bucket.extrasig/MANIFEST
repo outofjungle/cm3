@@ -1,0 +1,11 @@
+{"mode":"0644","name":["MANIFEST"],"type":"file"}
+{"mode":"0644","name":["MANIFEST.asc"],"type":"file"}
+{"mode":"0644","name":["NODELIST"],"type":"file","md5":"c8a60f482b43cedd45ecf792d06f6280"}
+{"mode":"0644","name":["REPO"],"type":"file","md5":"7e47dd257254ddcf747110089826e0db"}
+{"mode":"0644","name":["VERSION"],"type":"file","md5":"2b49eb013e4d1c0492e29be23479e767"}
+{"mode":"0644","name":["files/motd/MAIN"],"type":"file","md5":"8efbaa71cd7df7858e84a34e8b63db2c"}
+{"mode":"0644","name":["files/sudoers/MAIN"],"type":"file","md5":"9b1c99ecd2db8f1c98ba92f8096791ce"}
+{"mode":"0755","name":["scripts/motd"],"type":"file","md5":"77c9898db315f8e9ed4db92c6e48750c"}
+{"mode":"0644","name":["scripts/motd.asc"],"type":"file","md5":"ee8cb1d1734c5a3cd2920f74dcf96d7e"}
+{"mode":"0755","name":["scripts/sudoers"],"type":"file","md5":"97361b69d43a437f7804235aaee8a3ac"}
+{"mode":"0644","name":["scripts/sudoers.asc"],"type":"file","md5":"b2c4db5aec3df54d9983251f7a41149e"}

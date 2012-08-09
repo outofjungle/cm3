@@ -1,0 +1,12 @@
+
+         Warning!             This machine is using 
+   ____   __  __   _____     test configuration data 
+  / ___| |  \/  | |___ /  
+ | |     | |\/| |   |_ \       ********************
+ | |___  | |  | |  ___) |      * NOT INTENDED FOR *
+  \____| |_|  |_| |____/       *  PRODUCTION USE  *
+                               ********************
+
+ Hostname: ::hostname::
+       IP: ::ip::
+I'm in the role ybiip.bootserver

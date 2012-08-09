@@ -1,0 +1,39 @@
+
+
+#
+#	Spaces ARE valid field separators in this file. However,
+#	other *nix-like systems still insist on using tabs as field
+#	separators. If you are sharing this file between systems, you
+#	may want to use only tabs as field separators here.
+#	Consult the syslog.conf(5) manpage.
+
+#rsyslog v3 config file
+
+# provides support for local system logging (e.g. via logger command)
+$ModLoad imuxsock.so
+
+# provides kernel logging support (previously done by rklogd)
+$ModLoad imklog.so
+
+# Use default timestamp format
+$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+
+local0.*					/var/log/local0
+local1.*					/var/log/local1
+local2.*					/var/log/local2
+local3.*					/var/log/local3
+local4.*					/var/log/local4
+local5.*					/var/log/local5
+local6.*					/var/log/local6
+local7.*					/var/log/local7
+security.*					/var/log/security
+auth.*						/var/log/auth
+mail.*						/var/log/mail
+cron.*						/var/log/cron
+ntp.*						/var/log/ntp
+console.*					/var/log/console
+*.notice;kern.debug				/var/log/messages
+*.err;kern.notice				/dev/console
+*.notice					root
+*.emerg						*
+*.*						/var/log/all

@@ -1,0 +1,29 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ MAIN /],
+    max   => [qw/ MAIN /],
+);
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+
+# the entries in this file should at least sort of look like version numbers
+# but we don't actually require anything to be IN the file
+
+foreach my $line (@contents) {
+    if( $line =~ /^(\S+)\s+((?:\d+[\.-]?)+)$/ ) {
+        die "extra selfupdate key: $1" unless $1 eq 'chisel_client' || $1 eq 'chisel_client_sync';
+    } else {
+        die "line doesn't look like 'package version': $line";
+    }
+}
+
+# looks ok
+exit 0;

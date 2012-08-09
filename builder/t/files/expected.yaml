@@ -1,0 +1,111 @@
+# some expected buckets generated with default settings
+
+barqux:
+  files/motd/MAIN:
+    blob: 2de43c80bf914a4aefe16fc9345b9a2af8c9a4f1
+    contents: "hello world\nHello QUX\n"
+    file: files/motd/MAIN
+    md5: fcb4792367e0489bc3aab06e6f52b619
+    mode: '0644'
+    type: file
+  files/passwd/MAIN:
+    blob: 1d39382537d8532d3256e7e0913fcdfe970ff486
+    contents: "MAIN\nMAIN\n"
+    file: files/passwd/MAIN
+    md5: 45e8436644d696a12ebc5f83664ea43c
+    mode: '0644'
+    type: file
+  files/passwd/freebsd:
+    blob: 37bc725b534dc73708fc22e0f7a39f270ab8aae0
+    contents: "carol:r:2:s\n"
+    file: files/passwd/freebsd
+    md5: b0ad846af82717dc1643f248cdb3c3a1
+    mode: '0644'
+    type: file
+  files/passwd/linux:
+    blob: c483f99b5608679063fc1e429476812587fb0fde
+    contents: "carol:x:2:s\n"
+    file: files/passwd/linux
+    md5: dd49cd0105b799c11ffa3d11ca52141e
+    mode: '0644'
+    type: file
+  files/passwd/shadow:
+    blob: dedfed1e932793a2500ff00b7b823a58bae228b1
+    contents: "carol:r:13846:0:99999:7:::\n"
+    file: files/passwd/shadow
+    md5: f2993ccae8e8a7b6d82420f1b6a64b9d
+    mode: '0644'
+    type: file
+  files/quxfile/MAIN:
+    blob: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+    contents: ''
+    file: files/quxfile/MAIN
+    md5: d41d8cd98f00b204e9800998ecf8427e
+    mode: '0644'
+    type: file
+  files/sudoers/MAIN:
+    blob: 4fb78399b7186210c36e5102a836a3a3e2ca15da
+    contents: "bob\ncarol\n"
+    file: files/sudoers/MAIN
+    md5: 0bcc402f70498c7860f41332d79e4339
+    mode: '0644'
+    type: file
+  scripts/passwd:
+    blob: ae66378ab14ad92d100fe73ac4a7c3c265ff62ec
+    contents: "passwd.1 script\n"
+    file: scripts/passwd
+    md5: 3d872aa801337b37352de475fc2298bd
+    mode: '0755'
+    type: file
+fooqux:
+  files/motd/MAIN:
+    blob: 71be4f6854ed296fd3b132581fa26731a8d113e6
+    contents: "hello world\nHello FOO\n"
+    file: files/motd/MAIN
+    md5: 6191d639db25fc9ab2d23f5562419bcb
+    mode: '0644'
+    type: file
+  files/passwd/MAIN:
+    blob: 1d39382537d8532d3256e7e0913fcdfe970ff486
+    contents: "MAIN\nMAIN\n"
+    file: files/passwd/MAIN
+    md5: 45e8436644d696a12ebc5f83664ea43c
+    mode: '0644'
+    type: file
+  files/passwd/freebsd:
+    blob: b4a4e33a298520ecbbf2bd2b3434cc8b979ea87a
+    contents: "bob:a:1:b\ncarol:r:2:s\n"
+    file: files/passwd/freebsd
+    md5: 8369daa337481804930d6ce9ac8ce17f
+    mode: '0644'
+    type: file
+  files/passwd/linux:
+    blob: 8241924a39fb89f7af6cf757d0d3dcf31d4406a3
+    contents: "bob:x:1:b\ncarol:x:2:s\n"
+    file: files/passwd/linux
+    md5: bd61516ae6212b0b627359e42d67c2dd
+    mode: '0644'
+    type: file
+  files/passwd/shadow:
+    blob: f42a598e6b64f947cb2f1aadf620aaecf46b9b9b
+    contents: "bob:a:13846:0:99999:7:::\ncarol:r:13846:0:99999:7:::\n"
+    file: files/passwd/shadow
+    md5: 476150db5b3103542c3dabff1b01848e
+    mode: '0644'
+    type: file
+  files/quxfile/MAIN:
+    blob: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+    contents: ''
+    file: files/quxfile/MAIN
+    md5: d41d8cd98f00b204e9800998ecf8427e
+    mode: '0644'
+    type: file
+  files/sudoers/MAIN:
+    blob: ~
+  scripts/passwd:
+    blob: ae66378ab14ad92d100fe73ac4a7c3c265ff62ec
+    contents: "passwd.1 script\n"
+    file: scripts/passwd
+    md5: 3d872aa801337b37352de475fc2298bd
+    mode: '0755'
+    type: file

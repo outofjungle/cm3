@@ -1,0 +1,48 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use File::Temp qw/tempfile/;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ ssh_config-linux ssh_config-freebsd /],
+    max   => [qw/ ssh_config-linux ssh_config-freebsd ssh_config-freebsd4 /],
+);
+
+# make hash of allowed config keys
+my %keywords = ( Host=>1, AddressFamily=>1, BatchMode=>1, BindAddress=>1, ChallengeResponseAuthentication=>1, CheckHostIP=>1, 
+    Cipher=>1, Ciphers=>1, ClearAllForwardings=>1, Compression=>1, CompressionLevel=>1, ConnectionAttempts=>1, ConnectionTimeout=>1, 
+    ControlMaster=>1, ControlPath=>1, DynamicForwarding=>1, EnableSSHKeysign=>1, EscapeChar=>1, ForwardAgent=>1, ForwardX11=>1, 
+    ForwardX11Trusted=>1, GatewayPorts=>1, GlobalKnownHostsFile=>1, GSSAPIAuthentication=>1, GSSAPIDelegatedCredentails=>1, 
+    HashKnownHosts=>1, HostbasedAuthentication=>1, HostkeyAlgorithms=>1, HostKeyAlias=>1, HostName=>1, IdentitiesOnly=>1, 
+    IdentityFile=>1, KbdInteractiveDevices=>1, LocalCommand=>1, LocalForward=>1, LogLevel=>1, MACs=>1, NoHostAuthenticationForLocalhost=>1, 
+    NumberOfPasswordPrompts=>1, PasswordAuthentication=>1, PermitLocalCommand=>1, Port=>1, PreferredAuthentications=>1, Protocol=>1, 
+    ProxyCommand=>1, PubkeyAuthentication=>1, RekeyLimit=>1, RemoteForward=>1, RhostsRSAAuthentication=>1, RSAAuthentication=>1, SendEnv=>1, 
+    ServerAliveCountMax=>1, ServerAliveInterval=>1, SmartcardDevice=>1, StrictHostKeyChecking=>1, TCPKeepAlive=>1, TISAuthentication=>1, 
+    Tunnel=>1, TunnelDevice=>1, UsePrivilegedPort=>1, User=>1, UserKnownHostsFile=>1, VerifyHostKeyDNS=>1, XAuthLocation=>1, );
+
+
+foreach my $f (keys %files) {
+    my $sz = -s $files{$f};
+    if( $sz < (1<<8) ) {
+           die "file too short ($sz bytes): $f\n";
+    }
+
+    if( $sz > (1<<20) ) {
+           die "file too long ($sz bytes): $f\n";
+    }
+  
+    my @file = split /\n/, read_file( filename => $files{$f} );   
+    foreach my $line (@file) {
+        next if $line =~ /^\s*#/;
+        next if $line =~ /^\s*$/;
+        $line =~ /^\s*(\w+)/;
+        die "Config key not valid ($1): $f\n" unless exists $keywords{$1};      
+    }
+}
+
+exit 0;

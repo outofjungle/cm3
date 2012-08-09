@@ -1,0 +1,22 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my $os = $^O; # group file is os-dependent
+my $file = args( file => $os )
+  or die;
+
+my $cmd;
+$cmd = 'grpconv' if $os eq 'linux';
+
+install_file(
+    from     => $file,
+    to       => "/etc/group",
+    cmd      => $cmd,
+);
+
+Scripts::chmod_file 0400, "/etc/gshadow" if $os eq 'linux';
+
+exit 0;

@@ -1,0 +1,4 @@
+# file with only a localhost resolver should fail sanity
+
+domain foo.com
+nameserver 127.0.0.1

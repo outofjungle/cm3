@@ -1,0 +1,12 @@
+motd:
+    - replace BAR 1234X
+    - [ replacere, '\d{4}', 'QU' ]
+
+quxfile:
+    - nop
+
+---
+
+follows:
+    # funny capitalization to test case-insensitivity
+    - fuNC/*

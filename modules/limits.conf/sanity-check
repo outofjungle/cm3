@@ -1,0 +1,21 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args() or die;
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+if( ! @contents ) {
+    die "zero-length limits.conf file\n";
+}
+
+foreach (@contents) {
+    next if /^#/;
+    next if /^$/;
+    my ($domain, $type, $item, $value) = split( /[" "|\t]+/ );
+    die "Error: wrong input data" if ! ( defined($domain) and defined($type) and defined($item) and defined($value));
+}
+
+exit 0;

@@ -1,0 +1,103 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer describe:
+#  - get as much status as possible for a node
+
+use strict;
+use warnings;
+
+use JSON::XS ();
+use Log::Log4perl qw/:easy/;
+use LWP::UserAgent;
+use URI::Escape qw/uri_escape/;
+use Chisel::Builder::Engine;
+
+# get hostname to describe
+die "usage: $0 <hostname>\n" unless @ARGV == 1;
+my $host = lc shift @ARGV;
+
+# become chisel user if we started out as root
+if( $< == 0 ) {
+    exec( "/bin/setuidgid", "chisel", $0, @ARGV );
+    die "exec failed: $!\n";
+}
+
+my $engine = Chisel::Builder::Engine->new( log4perl_level => 'WARN' );
+$engine->setup;
+
+
+my $vip = $engine->config("cluster_vip");
+
+# grab configuration from web api
+my $rsp = $ua->get( "http://$vip:4081/v2/host/" . uri_escape( $host ) . "/describe" );
+
+my @transforms;
+my $error = "";
+
+if( $rsp->is_success ) {
+    my $obj = JSON::XS::decode_json( $rsp->decoded_content );
+
+    if( $obj->{'host'} ) {
+        # get transforms for this host
+        if( $obj->{'host'}{'transforms'} ) {
+            @transforms = map { $_->{'name'} } @{ $obj->{'host'}{'transforms'} };
+        }
+
+        # get error message for this host
+        $error = $obj->{'host'}{'error'};
+    } else {
+        $error = $obj->{'message'} || 'something went wrong';
+    }
+} else {
+    $error = $rsp->message . "\n";
+}
+
+# get zk cluster info for this host
+$rsp = $ua->get( "http://$vip:4081/v2/host/" . uri_escape( $host ) . "/workers" );
+my %zkworkers;
+
+if( $rsp->is_success ) {
+    my $obj = JSON::XS::decode_json( $rsp->decoded_content );
+
+    if( $obj->{'workers'} ) {
+        %zkworkers = %{$obj->{'workers'}};
+    } else {
+        $error = $obj->{'message'} || 'something went wrong';
+    }
+} else {
+    $error .= $rsp->message;
+}
+
+# print info in a nice way
+print "[hostname]\n$host\n\n";
+if( $error ) {
+    $error =~ s/\s+$//;
+    $error =~ s/^/- /mg;
+    print "[error]\n$error\n\n";
+}
+
+if( @transforms ) {
+    print "[transforms]\n";
+    print "- $_\n" for @transforms;
+    print "\n";
+}
+
+if( keys %zkworkers ) {
+    print "[cluster]\n";
+    foreach my $worker ( sort keys %zkworkers ) {
+        my $avail_str    = $zkworkers{$worker}{available} ? 'AVAILABLE'  : 'UNAVAILABLE';
+        my $assigned_str = $zkworkers{$worker}{assigned}  ? 'ASSIGNED'   : 'UNASSIGNED';
+        my $primary_str  = $zkworkers{$worker}{primary}   ? ' [primary]' : '';
+        print "- $worker: $avail_str / ${assigned_str}${primary_str}\n";
+    }
+}

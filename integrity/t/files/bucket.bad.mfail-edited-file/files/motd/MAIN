@@ -1,0 +1,5 @@
+
+ Hostname: ::hostname::
+       IP: ::ip::
+I'm in the role foo
+New line to break the manifest

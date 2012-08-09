@@ -1,0 +1,62 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+my %files = args() or die;
+
+# freebsd-only module
+exit 0 unless $^O eq 'freebsd';
+
+# figure out how to restart amd
+my $cmd = restart_cmd( service => "amd", reload_ok => 1 )
+  or die "can't figure out how to restart amd";
+
+my @amd_conf;
+my @map_files;
+my @maps;
+my @files;
+
+
+if( $files{'amd.conf'} ) {
+    @amd_conf = grep { $_ !~ m/^\s*#/ } split("\n", read_file( filename => $files{'amd.conf'}));
+}
+
+@maps = grep(/map_name/, @amd_conf);
+
+# clean files that are not being managed any more 
+if( -d "/etc/amd.maps" ) {
+    opendir(my $dir, "/etc/amd.maps") || die "can't opendir /etc/amd.maps: $!";
+    @files = grep { !/^\./ && -f "/etc/amd.maps/$_" } readdir($dir);
+    closedir $dir;
+}
+ 
+foreach my $f (@files) {
+    if( ! grep /$f/, @maps ) {
+       print "unlinking $f\n";
+       Scripts::unlink_file "/etc/amd.maps/$f";
+   }
+}
+
+foreach my $map (@maps) {
+    $map =~ m{=\s*([\w+\.\-]+)};
+    my $map_file = $1;
+
+    install_file(
+        from => $files{$map_file},
+        to   => "/etc/amd.maps/$map_file",
+        cmd  => $cmd,
+    );
+}
+
+install_file(
+    from => $files{'amd.conf'},
+    to   => "/etc/amd.conf",
+    cmd  => $cmd,
+);
+
+install_file(
+    from => $files{'amd.rc'},
+    to   => "/etc/rc.conf.d/amd",
+    cmd  => $cmd,
+);

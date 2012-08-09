@@ -1,0 +1,6 @@
+; bad domain should fail sanity
+
+domain foo.com fooo.com
+nameserver 6.28.18.11 # comment
+nameserver 6.28.18.12 ; comment
+nameserver 6.28.18.13

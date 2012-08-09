@@ -1,0 +1,71 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer zkworker:
+#   - keep ZooKeeper advertisements up to date
+
+use strict;
+use warnings;
+use Chisel::Builder::Engine;
+use Log::Log4perl qw/:easy/;
+use Getopt::Long;
+
+my $engine = Chisel::Builder::Engine->new( application => "doozer-zkworker" );
+$engine->setup;
+
+# figure out options (there's one, --loop, which makes us scan forever)
+my %opt;
+GetOptions( \%opt, "loop" ) or die "usage: doozer zkworker [--loop]\n";
+
+# lock because there is only one dist directory
+my $lockfd = $engine->lock( 'zkworker' );
+
+# print a nice message
+INFO "doozer zkworker starting";
+
+my $gitdir  = $engine->config( "var" ) . "/ws";
+my $distdir = $engine->config( "var" ) . "/dist";
+
+# Connect to ZooKeeper (need persistent connection since we create ephemeral nodes)
+my $zk = $engine->new_zookeeper_worker;
+
+# last commit we saw
+my $commit;
+
+do {    # this is part of a do ... while so we respect --loop
+
+    # sleep before loop iteration
+    sleep 5 if $opt{'loop'};
+
+    # Can we advertise for this worker?
+    if( $zk->can_advertise ) {
+        # check if we need to do anything
+        my $ws = Chisel::Workspace->new( dir => $gitdir );
+
+        # get list of hosts from $ws (at $commit_new)
+        my @hosts = $ws->hosts;
+
+        # update ZooKeeper
+        # XXX - by doing it this way, we remove advertisements from ZK
+        # XXX - some time after the configs are removed from the workspace
+        # XXX - which leads to temporary 404s
+        $zk->advertise( hosts => \@hosts );
+
+        1;
+    } else {
+        WARN "Unable to claim ZooKeeper advertisement lock for this worker.";
+    }
+} while( $opt{'loop'} );
+
+INFO "doozer zkworker stopping";
+
+exit 0;

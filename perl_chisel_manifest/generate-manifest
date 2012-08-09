@@ -1,0 +1,41 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use warnings;
+use strict;
+
+use Getopt::Long;
+
+use Chisel::Manifest;
+
+our %opt   = (
+             'h|help'   => 'Print this message',
+             'o|out=s' => 'path to output the manifest',
+             'd|directory=s' => 'directory to include',
+             'C=s' => 'chdir here before running',
+             );
+
+die "RTFS, bad usage" unless GetOptions(\our %o, keys %opt);
+
+die 'need output file' unless $o{o};
+
+
+
+open my $fh, ">", $o{o} or die "can't open $o{o}: $!";
+
+chdir $o{C} if $o{C};
+my $m = new Chisel::Manifest;
+my $output = $m->add_dir($o{d})->compute_manifest->to_json_lines();
+
+print $fh $output;
+close $fh;
+

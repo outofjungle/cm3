@@ -1,0 +1,300 @@
+#!/var/bin/perl -w
+
+use warnings 'all';
+use strict;
+use Getopt::Long qw/:config require_order gnu_compat/;
+use Fcntl qw/:flock SEEK_END/;
+use POSIX qw(setsid);
+
+use constant {
+    USE_INITTAB  => 100,
+    USE_UPSTART  => 101,
+    USE_RC_LOCAL => 102,
+};
+
+my %opt = (
+    'h|help'        => "Display this help",
+    'a|activate'    => "Activeate will add start line to /etc/rc.local (BSD) or inittab (RHEL)",
+    's|start'       => "Insert boot time code and start (Default: no start)",
+    'r|remove'      => "Kill and remove daemontools from system startup (use yinst to remove the package)",
+);
+
+
+my $chisel_lockfile = "/tmp/svscanboot_lockfile";
+
+my %o;
+usage() unless GetOptions( \%o, keys %opt );
+usage() if( $o{h} );
+
+
+if ($> != 0)
+{
+        die "Run this script with sudo";
+}
+
+# Figure out how this system starts stuff at boot
+my $method;
+
+# if on linux then run daemontools from init/upstart
+# if on freebsd then use /etc/rc.local
+if( $^O eq 'freebsd' ) {
+    $method = USE_RC_LOCAL;
+} elsif( $^O eq 'linux' && (system("rpm -q --quiet upstart") == 0) ) {
+    $method = USE_UPSTART;
+} elsif( -e "/etc/inittab" ) {
+    $method = USE_INITTAB;
+} else {
+    die "System not supported";
+}
+
+if( $o{a} ) {
+    if( $method == USE_INITTAB ) {
+        # if we have the old inittab id then update it.
+        system( "grep", "SV1:23:respawn:/bin/svscanboot", "/etc/inittab" );
+        if( $? == 0 ) {
+            update_inittab();
+        } else {
+        
+            system( "grep", "Chisel:235:respawn:/bin/svscanboot", "/etc/inittab" );
+            if( $? > 0 && !($? & 127) && ($?>>8) ) {
+                # grep exited normally with a nonzero code, we need to add daemontools lines
+                
+                open  my $rc, ">>", "/etc/inittab"                      or die "can't open /etc/inittab: $!\n";
+                flock $rc, LOCK_EX                                      or die "can't flock /etc/inittab: $!\n";
+                seek  $rc, 0, SEEK_END                                  or die "can't seek to the end of /etc/inittab: $!\n";
+                print $rc "Chisel:235:respawn:/bin/svscanboot $chisel_lockfile\n"
+                  or die "can't print to /etc/inittab: $!\n";
+                flock $rc, LOCK_UN                                      or die "can't funlock /etc/inittab: $!\n";
+                close $rc                                               or die "can't close /etc/inittab: $!\n";
+            } elsif( $? ) {
+                # something weird happened with grep
+                die "grep exited abnormally\n";
+            }
+        }
+    } elsif( $method == USE_RC_LOCAL ) {
+        system( "grep", "-E", "/bin/svscanboot", "/etc/rc.local" );
+        if( $? > 0 && !($? & 127) && ($?>>8) ) {
+            # grep exited normally with a nonzero code, we need to add daemontools lines
+
+            open  my $rc, ">>", "/etc/rc.local"                     or die "can't open /etc/rc.local: $!\n";
+            flock $rc, LOCK_EX                                      or die "can't flock /etc/rc.local: $!\n";
+            seek  $rc, 0, SEEK_END                                  or die "can't seek to the end of /etc/rc.local: $!\n";
+            print $rc "/bin/svscanboot $chisel_lockfile &\n"
+              or die "can't print to /etc/rc.local: $!\n";
+            flock $rc, LOCK_UN                                      or die "can't funlock /etc/rc.local: $!\n";
+            close $rc                                               or die "can't close /etc/rc.local: $!\n";
+        } elsif( $? ) {
+            # something weird happened with grep
+            die "grep exited abnormally\n";
+        }
+    } elsif( $method == USE_UPSTART ) {
+        # drop in /etc/init/chisel.conf
+        open my $fh, ">", "/etc/init/chisel.conf" or die "can't open /etc/init/chisel.conf: $!\n";
+        print $fh <<EOT or die "can't print to /etc/init/chisel.conf: $!\n";
+start on stopped rc RUNLEVEL=[2345]
+stop on runlevel [!2345]
+
+respawn
+exec /bin/svscanboot $chisel_lockfile
+EOT
+
+        close $fh or die "can't close /etc/init/chisel.conf: $!\n";
+    }
+}
+
+# start daemontools if requested
+if( $o{s} ) {
+    
+    if( $method == USE_INITTAB ) {
+        # if we have the old inittab id then die and ask them to re-activate
+        system( "grep", "SV1:23:respawn:/var/chisel/bin/svscanboot", "/etc/inittab" );
+        if( $? == 0 ) {
+            die "Old entry found in inittab. Please re-run with -a to update inittab\n\n";
+        }
+        
+        #only start if we have /etc/inittab set correctly. 
+        system( "grep", "Chisel:235:respawn:/bin/svscanboot", "/etc/inittab" );
+        if( $? ) {
+            die "svscanboot was not found in /etc/inittab. Try running with -a -s options";
+        } else {
+            kill 1, 1;
+        }
+    }elsif( $method == USE_RC_LOCAL ) {
+            
+        #only start if we have /etc/rc.local set correctly. 
+        system( "grep", "/bin/svscanboot", "/etc/rc.local" );
+        if( $? ) {
+            die "svscanboot was not found in /etc/rc.local";
+        } else {
+            open STDIN, '/dev/null'             or die "Can't read /dev/null: $!";
+            open STDOUT, '>>/dev/null'          or die "Can't write to /dev/null: $!";
+            open STDERR, '>>/dev/null'          or die "Can't write to /dev/null: $!";
+            defined(my $pid = fork)             or die "Can't fork: $!";
+            exit if $pid;
+            setsid                              or die "Can't start a new session: $!";
+            umask 0022;
+            
+            # remove signal handlers if they were set by whoever called us
+            $SIG{TERM} = $SIG{INT} = $SIG{HUP} = 'DEFAULT';
+            exec "/bin/svscanboot", $chisel_lockfile;
+            die "Could not exec /bin/svscanboot";
+        }
+    } elsif( $method == USE_UPSTART ) {
+        # check for /etc/init/chisel.conf
+        if( ! -e "/etc/init/chisel.conf" ) {
+            die "Please re-run with -a to add upstart config";
+        }
+
+        # start it up
+        system("/sbin/initctl start chisel") == 0
+          or die "Could not start";
+    }
+}
+
+if($o{r}) {
+    if( $method == USE_INITTAB ) {
+        # remove line from /etc/inittab
+        open  my $orig, "<", "/etc/inittab"                       or die "can't open /etc/inittab: $!\n";
+        flock $orig, LOCK_EX                                      or die "can't flock /etc/inittab: $!\n";
+        open  my $new, ">", "/etc/inittab.tmp.$$"                 or die "can't open new file for writing $!\n";
+        
+        # find and remove the svscanboot line
+        while (<$orig>) {
+            next if (m{SV1:23:respawn:/bin/svscanboot});
+            next if (m{Chisel:235:respawn:/bin/svscanboot});
+            print $new $_                                         or die "can't write to new file: $!";
+        }
+        
+        flock $orig, LOCK_UN                                      or die "can't funlock /etc/inittab: $!\n";        
+        close $orig                                               or die "can't close /etc/inittab: $!\n";
+        close $new                                                or die "can't close new file: $!\n";
+        
+        rename("/etc/inittab.tmp.$$", "/etc/inittab")             or die "can't rename $new to $orig: $!";
+
+        kill 1, 1;
+        
+        # clean up lock file if it exists
+        if( -e "$chisel_lockfile" ) {
+            unlink $chisel_lockfile                                  or die "can't remove lock file: $!";
+        }
+        
+    } elsif( $method == USE_RC_LOCAL ) {
+        # remove line from /etc/rc.local
+        open  my $orig, "<", "/etc/rc.local"                      or die "can't open /etc/rc.local: $!\n";
+        flock $orig, LOCK_EX                                      or die "can't flock /etc/rc.local: $!\n";
+        open  my $new, ">", "/etc/rc.local.tmp.$$"                or die "can't open new file for writing $!\n";
+        
+        # find and remove the line
+        while (<$orig>) {
+            next if (m{/bin/svscanboot});
+            print $new $_                                         or die "can't write to $new: $!";
+        }
+        
+        flock $orig, LOCK_UN                                      or die "can't funlock /etc/rc.local: $!\n";        
+        close $orig                                               or die "can't close /etc/rc.local: $!\n";
+        close $new                                                or die "can't close new file: $!\n";
+        
+        rename("/etc/rc.local.tmp.$$", "/etc/rc.local")           or die "can't rename $new to $orig: $!";
+     
+        
+        # TERM the process group
+        my $process_group = get_pgid();
+        kill -15, $process_group if $process_group;
+        
+        # KILL it after a second
+        sleep 1;
+        $process_group = get_pgid();
+        kill -9, $process_group if $process_group;
+        
+        # clean up lock file if it exists
+        if( -e "$chisel_lockfile" ) {
+            unlink $chisel_lockfile                                  or die "can't remove lock file: $!";
+        }
+    } elsif( $method == USE_UPSTART ) {
+        # stop the service
+        system("/sbin/initctl stop chisel");
+
+        # remove file from /etc/init
+        unlink "/etc/init/chisel.conf";
+    }
+}
+
+exit 0;
+
+sub update_inittab {
+    
+    open  my $orig, "<", "/etc/inittab"                       or die "can't open /etc/inittab: $!\n";
+    flock $orig, LOCK_EX                                      or die "can't flock /etc/inittab: $!\n";
+    open  my $new, ">", "/etc/inittab.tmp.$$"                 or die "can't open new file for writing $!\n";
+    
+    # find and remove the svscanboot line
+    while (<$orig>) {
+        s!SV1:23:respawn:/bin/svscanboot!Chisel:235:respawn:/bin/svscanboot!;
+        print $new $_                                        or die "can't write to new file: $!";
+    }
+    
+    flock $orig, LOCK_UN                                      or die "can't funlock /etc/inittab: $!\n";        
+    close $orig                                               or die "can't close /etc/inittab: $!\n";
+    close $new                                                or die "can't close new file: $!\n";
+    
+    
+    
+    # verify that we are good
+    system( "grep", "Chisel:235:respawn:/bin/svscanboot", "/etc/inittab.tmp.$$" );
+    if( $? == 0 ) {
+        rename("/etc/inittab.tmp.$$", "/etc/inittab")             or die "can't rename $new to $orig: $!";
+        print "inittab has been updated\n";
+    } else {
+        unlink "/etc/inittab.tmp.$$";
+        die "Could not update inittab\n\n";
+    }
+}
+
+sub get_pgid {
+    if (-e $chisle_lockfile) {
+        # if the lockfile exists, assume we're trusting it
+        my @lsof = split "\n", qx[lsof -Fg $chisel_lockfile];
+        my $pgid;
+        for my $line (@lsof) {
+            if ($line =~ /g(\d+)/) {
+                return $1;
+            }
+        }
+        return;
+    } else {
+        # if no lockfile, assume old ps behavior
+        my @ps = split "\n", qx[ps axww -o pid= -o pgid= -o command=];
+        foreach my $line (@ps) {   
+            my ( $pid, $pgid, $cmd ) = $line =~ /^\s*(\d+)\s+(\d+)\s+(.+)\s*$/;
+            return $pgid if( $cmd eq '/bin/sh /bin/svscanboot' );
+        }
+        return;
+    }
+}
+
+
+sub usage {
+    my $msg = shift;
+    $msg = "\n$msg\n" if( $msg );
+    $msg ||= '';
+
+    warn "Usage: $0 [options]\n";
+
+    my @array;
+    foreach my $key ( keys %opt ) {
+        my ( $left, $right ) = split /[=:]/, $key;
+        my ( $a,    $b )     = split /\|/,   $left;
+        if( $b ) {
+            $left = "-$a, --$b";
+        } else {
+            $left = "    --$a";
+        }
+
+        $left = substr( $left . ( ' ' x 20 ), 0, 20 );
+        push @array, "$left $opt{$key}\n";
+    }
+
+    warn sort @array;
+    die "$msg\n";
+}
+

@@ -1,0 +1,7 @@
+; normal looking file with search instead of domain
+
+domain foo.com
+search foo.com foo.com
+nameserver 6.28.18.11 # comment
+nameserver 6.28.18.12 ; comment
+nameserver 6.28.18.13

@@ -1,0 +1,152 @@
+#!/usr/bin/perl -w
+
+# selfupdate
+
+# updates chisel_client, chisel_client_sync packages based on commands from the server.
+# should only be used by environments that use  chisel_client_dt
+
+use strict;
+use warnings;
+use Fcntl qw/:DEFAULT :flock/;
+use Scripts qw/:all/;
+
+# exit codes:
+my %FAILCODE = (
+    'UNKNOWN'     => 30,    # whoever called sup_run_cmd didn't give a code
+    'INSTALL'     => 31,    # install failed for a normal package
+    ####################    # codes 32-34 were used in the past and are now reserved
+    'RESTART'     => 35,    # failed post-install while trying to restart the service
+    'DT_MISSING'  => 36,    # chisel_client_dt was not installed, so refusing to run
+);
+
+my $file = args()
+  or die;
+
+my @contents = split "\n", read_file( filename => $file );
+
+# lock on /var/chisel/lock/selfupdate
+my $lockfd;
+do {
+    mkdir "/var/chisel/lock", 0700 if ! -d "/var/chisel/lock";
+    chmod 0700, "/var/chisel/lock";
+
+    my $lockp = "/var/chisel/lock/selfupdate";
+    sysopen $lockfd, $lockp, O_WRONLY | O_CREAT
+      or die "open $lockp: $!\n";
+    flock $lockfd, LOCK_EX | LOCK_NB
+      or die "lock $lockp: $!\n";
+};
+
+my $VERSION_RE = qr/(?:\d+\.?)+/;
+
+foreach my $line (@contents) {
+    if( $line =~ /^(\S+)\s+($VERSION_RE)$/ ) {
+        my ( $pkg, $target_ver ) = ( $1, $2 );
+        next unless $pkg eq 'chisel_client' || $pkg eq 'chisel_client_sync';
+
+        my $current_ver   = get_installed_version( $pkg ) or die "$pkg does not seem to be installed\n";
+        my $current_ver_p = parse_version( $current_ver ) or die "can't understand current $pkg version ($current_ver)\n";
+        my $target_ver_p  = parse_version( $target_ver )  or die "can't understand target $pkg version ($target_ver)\n";
+
+        # only allow upgrades from/to versions >= 1.3
+        die "upgrades to version $target_ver are not supported\n"    unless $target_ver_p ge parse_version( "1.3" );
+        die "upgrades from version $current_ver are not supported\n" unless $current_ver_p ge parse_version( "1.3" );
+
+        if( $target_ver_p gt $current_ver_p ) {
+            # make sure we have chisel_client_dt installed, otherwise selfupdate should not be used
+            if( !get_installed_version( "chisel_client_dt" ) ) {
+                warn "selfupdate should only be used in concert with chisel_client_dt\n";
+                exit $FAILCODE{'DT_MISSING'};
+            }
+
+            # we'll need to run a command to upgrade the package
+            my $cmd = get_install_command( $pkg, $target_ver )
+              or die "could not figure out self-update command for $pkg $target_ver\n";
+
+            # alright let's try to run $cmd
+            do {
+                # interrupting an upgrade could be dangerous
+                local $SIG{TERM} = $SIG{INT} = $SIG{HUP} = 'IGNORE';
+                sup_run_cmd( $cmd, code => $FAILCODE{'INSTALL'} );
+            };
+
+            # restart $pkg if needed
+            my $svstat = scalar qx[/var/chisel/bin/svstat /var/chisel/service/$pkg];
+            if( $? == 0 and $svstat =~ m{^/var/chisel/service/$pkg: up} ) {
+                sup_run_cmd( "/var/chisel/bin/svc -t /var/chisel/service/$pkg",     code => $FAILCODE{'RESTART'} );
+                sup_run_cmd( "/var/chisel/bin/svc -t /var/chisel/service/$pkg/log", code => $FAILCODE{'RESTART'} );
+            }
+        }
+    }
+}
+
+exit 0;
+
+sub sup_run_cmd { # ulimit and nice some command, then die if it fails
+    my $cmd = shift;
+    my %args = @_;
+
+    warn "[RUN] $cmd\n";
+    $cmd = "nice -n 15 $cmd"     unless $args{no_nice};
+    $cmd = "ulimit -t 300; $cmd" unless $args{no_ulimit};
+    system( 'sh', '-c', $cmd );
+    if($?) {
+        warn "[FAILED] $cmd (" . ($?>>8) . ")\n";
+        my $code = $args{code} || $FAILCODE{'UNKNOWN'};
+        exit $code;
+    }
+
+    1;
+}
+
+sub get_installed_version { # 
+    my $pkg = shift or die "package not provided\n";
+
+    # FIX ME
+
+    return undef;
+}
+
+sub get_install_command { # 
+    my $pkg = shift or die "package not provided\n";
+    my $ver = shift or die "version not provided\n";
+
+    # FIX ME
+}
+
+sub parse_version { # normalize version numbers
+    my $pver = $_[0];
+    if ($pver eq "*") {
+        return undef;
+      }
+    $pver =~ s/^[.-]//g;
+    my $epoch = 0;
+    if ($pver =~ /^(.*),(\d+)+$/) {
+        $pver = $1;
+        $epoch = $2;
+      }
+    my(@v) = split(/\./,$pver,10);
+    my $ver = sprintf("%010d",$epoch);
+    for (@v) {
+        if (/^(a|b|alpha|beta)(\d+)$/i) {
+            $_ = "0".$1.$2;
+          }
+        if (/^(\d+)(([a-zA-Z]*)(\d*))?([_-](\d+))?.*$/) {
+            my($v,$va,$vsub,$rev) = ($1,$3,$4,$6);
+            $ver .= sprintf(".%010d",$v);
+            if ($va) {
+                $ver .= sprintf("%-8s",$va);
+                if ($vsub) {
+                    $ver .= sprintf("%010d",$vsub);
+                  }
+              }
+            if ($rev) {
+                $ver .= sprintf("-%010d",$rev);
+              }
+          } else {
+            last;
+        }
+      }
+    $ver =~ s/(\.0+)+$//g;
+    $ver;
+}

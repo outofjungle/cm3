@@ -1,0 +1,97 @@
+'FOO':
+ - foo1
+ - foo2
+ - foo3
+ - foobar1
+ - foobar2
+ - fooqux1
+ - foobarqux1
+
+'BAR':
+ - bar1
+ - bar2
+ - bar3
+ - foobar1
+ - foobar2
+ - barqux1
+ - barqux2
+ - foobarqux1
+
+'QUX':
+ - qux1
+ - qux2
+ - qux3
+ - fooqux1
+ - barqux1
+ - barqux2
+ - foobarqux1
+
+'ALL':
+ - bar1
+ - bar2
+ - bar3
+ - barqux1
+ - barqux2
+ - foo1
+ - foo2
+ - foo3
+ - foobar1
+ - foobar2
+ - foobarqux1
+ - fooqux1
+ - qux1
+ - qux2
+ - qux3
+
+'SOME':
+ - bar1
+ - barqux1
+ - foo1
+ - foobar1
+ - foobarqux1
+ - fooqux1
+ - qux1
+
+'BADBAD':
+ - bad0
+
+'BINARY':
+ - bin0
+
+'INVALID':
+ - invalid1
+
+'MODULE_BUNDLE':
+ - mb0
+
+'UNICODE':
+ - u0
+
+'bbb01-03':
+ - bbb01
+ - bbb02
+ - bbb03
+ 
+# a group key with a stupid name to make sure we can handle it
+">'a(b) & c\"":
+ - abc
+ - def
+
+# these hosts are tagged with "taga" (in tags.1 allowed to get func/FOO, func/BAR)
+'cmdb_property/taga':
+ - foobar1
+ - bar1
+ - foo1
+ - barqux1     # qux denied 
+ - barqux2     # qux *not* denied since it's also in tag b
+ - foobarqux1  # qux denied
+
+# these hosts are tagged with "tag b" (in tags.1 allowed to get func/BAR, func/QUX)
+'cmdb_property/tag b':
+ - barqux2
+ - fooqux1     # foo denied
+
+# empty tag
+'cmdb_property/notag': []
+
+'empty()': []

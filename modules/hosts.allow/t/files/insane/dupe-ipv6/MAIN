@@ -1,0 +1,36 @@
+# Part of the Chisel hosts.allow test suite =====
+ALL : 127.0.0.0/255.0.0.0 : allow
+ALL : [::ffff:127.0.0.0]/104 : aLlOw
+ALL : 63.88.179.0/255.255.255.0 : allow
+ALL : 63.99.168.0/255.255.255.0 : allow
+ALL : 63.170.101.0/255.255.255.0 : allow
+ALL : 63.209.164.0/255.255.252.0 : allow
+ALL : 63.250.192.0/255.255.224.0 : allow
+ALL : 64.157.4.0/255.255.255.192 : allow
+ALL : 64.157.4.128/255.255.255.128 : allow
+ALL : 64.198.211.64
+ALL : 64.215.196.10 : allow
+ALL : 65.164.123.28 : allow
+ALL : 65.169.3.224/255.255.255.224 : allow
+ALL : 66.18.114.144 : allow
+ALL : 66.94.224.0/255.255.224.0 : allow
+ALL : 69.147.83.0/255.255.255.128 : deny
+ALL : 69.147.64.0/255.255.192.0 : allow
+
+# IPV6 specials - not routed, but still useful.  LINK-LOCAL-UNICAST  UNIQUE-LOCAL_UNICAST (RFC4193)  and Loopback
+ALL : [FE80::]/10 : allow
+ALL : [FC00::]/7 : allow
+ALL : [::1]/128 : allow
+# IPV6  GLOBAL-UNICAST (routed)
+ALL : [2001:49a8:0:0001::]/64 : deny
+ALL : [2001:4998::]/32 : allow
+ALL : [2001:4998::]/32 : allow
+ALL : [2001:49a0::]/32 : allow
+ALL : [2001:49a8::]/32 : allow
+ALL : [2406:2000::]/32 : allow
+#
+# BEGINNING OF CUSTOMIZATION SECTION
+# DO NOT DELETE OR MODIFY THE NEXT LINE
+# hosts.allow.local will be inserted after this line
+# END OF CUSTOMIZATION SECTION
+ALL : ALL : deny

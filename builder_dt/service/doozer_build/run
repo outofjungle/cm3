@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /bin/setuidgid chiseldata doozer run overmind

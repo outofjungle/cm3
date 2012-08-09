@@ -1,0 +1,8 @@
+#!/usr/local/bin/perl
+
+use strict;
+use Mojo::Server::PSGI;
+use Chisel::BuilderWeb::MojoWS;
+
+my $psgi = Mojo::Server::PSGI->new( app_class => 'Chisel::BuilderWeb::MojoWS' );
+my $app = sub { $psgi->run( @_ ) };

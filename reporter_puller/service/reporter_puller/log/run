@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# log 150x 16M files without timestamps (log4perl adds timestamps)
+exec /bin/setuidgid chiseldata /bin/multilog s16777215 n150 /logs/reporter_puller.d/

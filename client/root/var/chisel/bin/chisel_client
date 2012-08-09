@@ -1,0 +1,394 @@
+#!/var/chisel/bin/perl -wT
+#
+# chisel_client - host-level configuration management daemon
+#
+# Designed to run in a loop forever, forking and executing scripts as 
+# necessary; override this behavior with --once.
+#
+# Reads data out of /var/chisel/data. Files go in
+# /var/chisel/data/files and scripts to interpret/install them
+# go in /var/chisel/data/scripts.
+#
+# Scripts should print on stdout "INTERVAL\n" when run with the argument
+# "--interval".  INTERVAL must consist of an integer value representing the
+# number of seconds the script would like to sleep before being executed
+# again.  Scripts are encouraged to randomize this value.
+#
+# Rough idea:
+# - forever:
+#   - foreach SCRIPTNAME in /var/chisel/data/scripts/*:
+#      - chdir "/var/chisel/data"
+#      - fork and exec "scripts/SCRIPTNAME" "files/SCRIPTNAME"
+#
+# /var/chisel/data is populated via arsync (atomic rsync) by chisel_client_sync
+
+use warnings 'all';
+use strict;
+
+# set PATH, PERL5LIB to things that will work in our environment
+BEGIN {
+    $ENV{'PATH'} = '/var/chisel/bin:/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin';
+    $ENV{'PERL5LIB'} = '/var/chisel/lib/perl5/site_perl';
+    unshift @INC, '/var/chisel/lib/perl5/site_perl';
+}
+
+use Getopt::Long qw/:config require_order gnu_compat/;
+use POSIX qw/:sys_wait_h/;
+use Cwd;
+
+my %opt = (
+    # Please make sure new options use longname|s format for better self-documentation.
+    # $options{'help'} is easier to interpret at a glance than $o{h}
+    'dryrun|n'      => "Run without committing changes",
+    'h|help'        => "Display this help",
+    'o|once'        => "Run only once, then exit",
+    'r|run=s'       => "Run only this script",
+    'q|quiet'       => "Be quiet",
+    'd|directory=s' => "Work in this directory [/var/chisel/data]",
+    'i|interval=i'  => "Minimum interval in seconds for scripts [300]",
+    'version'       => "Print version number",
+);
+
+# $VERSION is set during build process by the Makefile
+my $VERSION = '::REPLACE_VERSION::';
+
+my %o;
+usage() unless GetOptions( \%o, keys %opt );
+usage() if( $o{h} );
+
+$| = 1;
+
+if( $o{version} ) {
+    print "$VERSION\n";
+    exit 0;
+}
+
+my $directory = '/var/chisel/data';
+$directory = $o{d} if( defined( $o{d} ) );
+
+# lock file put in place by chisel_pause
+my $pause_dir = '/var/chisel/var/pause';
+my $max_pause = ( 4 * 3600 ) + 30;
+
+# sleep a minimum of 300 seconds between invocations of a script
+defined( $o{i} ) or $o{i} = 300;
+my $minint = $o{i};
+
+# hash of scriptname => pid
+my %running_scripts;
+
+# hash of pid => scriptname
+my %running_pids;
+
+# hash of scriptname => interval between runs
+my %interval;
+
+# hash of scriptname => time started
+my %started;
+
+# hash of scriptname => script version
+my %version;
+
+# list of scripts we're going to be running
+my @scripts;
+
+# file mtime
+my %file_mtime;
+
+# mtime of scripts directory - when this changes, we need to repopulate
+# @scripts
+my $last_scripts_mtime = 0;
+
+# Exit code
+my $exit = 0;
+
+# get a count of arguments passed into --run
+my $num_scripts_to_run = scalar( map { $_ } split /,/, $o{r}) if( defined( $o{r} ) );
+
+# Set dry run env variable flag if needed
+#   Note: This will also be enabled if caller's environment has it
+#         set and exported, even if the commandline option is not
+#         specified since we do not explicitly unset it.
+$ENV{'chisel_DRY_RUN'} = 1 if( defined( $o{'dryrun'} ) );
+
+while( 1 ) {
+    my $scripts_mtime = ( stat( "$directory/scripts" ) )[9];
+    my $now = time;  # check clock once per loop
+
+    # scan scripts if:
+    #  first time
+    #  only once for --once
+    #  when the dirs mtime changes
+    if( not defined $scripts_mtime ) {
+        @scripts = ();
+        
+        print "Does not exist: $directory/scripts\n";
+        $exit = 1 if $o{o};
+        
+        # if looping, sleep for a bit so we don't scan constantly
+        sleep 30 if ! $o{o};
+    } elsif( not $last_scripts_mtime
+        or ( not $o{o} and $scripts_mtime != $last_scripts_mtime ) )
+    {
+        opendir my $dir, "$directory/scripts";
+        print "SCANNING $directory/scripts\n";
+
+        @scripts = ();
+
+        foreach my $script ( readdir $dir ) {
+            # grab executable files, but exclude dotfiles.
+            if( -f "$directory/scripts/$script" and -x "$directory/scripts/$script" and $script =~ /^([^\.].*)$/ ) {
+                push @scripts, $1;
+            }
+        }
+
+        closedir $dir;
+        $last_scripts_mtime = $scripts_mtime;
+
+        # --run=servicebuilder.conf,dpkg-list will only run those scripts
+        if( $o{r} ) {
+            my $run_only = $o{r};
+            my %run_only = map { $_ => 1 } split /,/, $run_only;
+
+            @scripts = grep { defined $run_only{$_} } @scripts;
+            
+            # if the number of scripts put on the command line does not
+            # match the numbner of scripts in the scripts array, exit 1
+            if( scalar(@scripts) != $num_scripts_to_run) {
+               print "FATAL: One or more of the below scripts were not found \n $o{r} \n";
+               $exit ||= 1;
+            }
+        }
+    }
+
+    # start scripts up
+    foreach my $script ( @scripts ) {
+        next if $running_pids{$script};
+        
+        # wait until the interval has run out before executing script again
+        if(     defined( $interval{$script} )
+            and defined( $started{$script} ) )
+        {
+            if( $started{$script} > $now + $minint ) {
+                # looks like the clock was set backwards on us
+                print "RESET TIMER: $script (started " . ($started{$script}-$now) . "s in the future)\n"; 
+            } elsif(  $interval{$script} + $started{$script} > $now and !is_updated( $file_mtime{$script}, $script ) ) {
+                next;
+            }
+        }
+
+        # regardless of whether we decide to run the script, remember start time to avoid busy loop
+        $started{$script} = $now;
+        $interval{$script} = $minint
+            if !$interval{$script} || $interval{$script} < $minint;
+
+        # check if this script is paused
+        if( my $rem = is_paused( $script ) ) {
+            printf( "SCRIPT PAUSED (%s): %s.\n", format_seconds( $rem ), $script );
+            next;
+        }
+        
+        #gather mtime of script file dirs
+        if( -d "$directory/files/$script") {
+            opendir my $file_dir, "$directory/files/$script";
+            foreach my $file ( readdir $file_dir ) {
+                $file_mtime{$script}{$file} = ( stat( "$directory/files/$script/$file" ) )[9] if $file =~ /^([^\.].*)$/;
+            }
+        }
+
+        # (re-)chdir into $directory to make sure scripts/, files/, and VERSION all match
+        unless( chdir $directory ) {
+            print "chdir $directory failed: $!\n";
+            next;
+        }
+
+        # only run if files/$script and scripts/$script
+        next unless( -d "files/$script" );
+
+        # grab VERSION for reporting
+        my $ver;
+        if( open my $verfd, "<", "VERSION" ) {
+            chomp( $ver = <$verfd> );
+            close $verfd;
+        }
+        
+        # sanity on VERSION
+        if( ! $ver || $ver !~ /^\d+$/ ) {
+            print "Unable to determine version of scripts.\n";
+            $ver = 0;
+        }
+                
+        print "SCRIPT RUNNING: $script\n";
+
+        # 1) fork unless in dry run
+        # 2) insert the script's pid into forward and reverse pid<->script
+        #    lookup hashes
+        # 3) in child, exec the script.  We'll clean it up with waitpid after
+        #    it's done - but we'll never recover it if it hangs forever
+        if( ! $o{'dryrun'} ) {
+            if( my $pid = fork ) {
+                $running_scripts{$pid} = $script;
+                $running_pids{$script} = $pid;
+                $version{$script}      = $ver;
+            } else {
+                if( $o{q} ) {
+                    close STDOUT;
+                    open STDOUT, ">", "/dev/null";
+                    close STDERR;
+                    open STDERR, ">", "/dev/null";
+                } 
+            
+                my @cmd = ( "scripts/$script", "files/$script" );
+                $ENV{PERL5LIB} = "scripts:/var/chisel/lib/perl5/site_perl";
+                exec( @cmd );
+                die "exec $directory/scripts/$script failed: $!";
+            }
+        } else {
+            my @cmd = ( "scripts/$script", "files/$script" );
+            $ENV{PERL5LIB} = "scripts:/var/chisel/lib/perl5/site_perl";
+            system( @cmd );
+            my $code = $?;
+            print "SCRIPT " . ( $code ? "FAILED" : "FINISHED" ) . " (" . ( $code >> 8 ) . "): $script.\n";
+            
+        }
+    }
+
+    # clean up any children that may still be running
+    if( keys %running_scripts ) {
+        my $pid = 0;
+        while( ( $pid = waitpid( -1, WNOHANG ) ) > 0 ) {
+            my $code   = $?;
+            my $script = $running_scripts{$pid};
+            delete $running_scripts{$pid};
+            delete $running_pids{$script};
+            
+            print "SCRIPT " . ( $code ? "FAILED" : "FINISHED" ) . " (" . ( $code >> 8 ) . "): $script.\n";
+            $exit = ($code >> 8) || 255 if $code;
+            
+            if( $o{o} ) {  # run once
+                           # remove $script from @scripts
+                @scripts = grep { $_ ne $script } @scripts;
+                last unless scalar keys %running_scripts;
+            } else {         # see if there's a new interval
+                $interval{$script} = do {
+                         local $ENV{PERL5LIB} = "scripts:/var/chisel/lib/perl5/site_perl";
+                        `cd $directory && $directory/scripts/$script --interval`;
+                };
+                chomp $interval{$script};
+                $interval{$script} = $minint
+                    if !$interval{$script} || $interval{$script} < $minint;
+
+                # slightly randomize interval
+                my $fudge = int( rand( 10 ) );
+                $interval{$script} += $fudge;
+                report(
+                    script   => $script,
+                    code     => ($code ? ($code>>8)||255 : 0),
+                    runtime  => $now - $started{$script},
+                    version  => $version{$script}
+                );
+            }
+        }
+    } else {
+        last if $o{o};    # run once
+    }
+    
+    sleep 5;
+}
+
+exit $exit;
+
+# return 1 if the mtime is > previous
+# return 0 if the mtime is <= previous
+sub is_updated {
+    my $file = shift;
+    my $script = shift;
+    my $is_updated = 0;
+    
+    map { $is_updated = 1 if( $file->{$_} < ( stat( "$directory/files/$script/$_" ) )[9] ) } keys %{$file};
+    return $is_updated;
+}
+
+# returns 0 to continue
+# returns >0 (time remaining in seconds) if paused
+sub is_paused {
+    my $script = shift;
+    my $pause_file = "$pause_dir/$script";
+    my $pause_mtime = (stat $pause_file)[9];
+    
+    return 0 unless defined( $pause_mtime );
+
+    my $remaining = $pause_mtime - time;
+
+    # bad SA, no cookie.
+    if( $remaining > $max_pause ) {
+        print "pause file too far in the future. Unpausing $script.\n";
+        my $r = unlink $pause_file;
+        unless( $r == 1 ) {
+            print "Unable to remove $pause_file: $!.\n";
+        }
+        return 0;
+    }
+
+    if( $remaining > 0 ) {
+        return $remaining;
+    }
+
+    unlink $pause_file;
+    return 0;
+}
+
+sub usage {
+    my $msg = shift;
+    $msg = "\n$msg\n" if( $msg );
+    $msg ||= '';
+
+    warn "Usage: $0 [options]\n";
+
+    my @array;
+    foreach my $key ( keys %opt ) {
+        my ( $left, $right ) = split /[=:]/, $key;
+        my ( $a,    $b )     = split /\|/,   $left;
+        if( $b ) {
+            $left = "-$a, --$b";
+        } else {
+            $left = "    --$a";
+        }
+
+        $left = substr( $left . ( ' ' x 20 ), 0, 20 );
+        push @array, "$left $opt{$key}\n";
+    }
+
+    warn sort @array;
+    die "$msg\n";
+}
+
+sub format_seconds {
+    my $sec = shift;
+    my $out;
+    $out = sprintf( "%02d:", $sec / 3600 );
+    $sec = $sec % 3600;
+    $out .= sprintf( "%02d:", $sec / 60 );
+    $sec = $sec % 60;
+    $out .= sprintf( "%02d", $sec );
+    return $out;
+}
+
+sub report {
+    my %report = @_;
+
+    return unless %report;
+
+    # check key, value format. this also untaints the values.
+    foreach my $key ( keys %report ) {
+        if( $key =~ /^(\w{1,31})$/ and $report{$key} =~ /^([a-zA-Z0-9\-\_\:\.]{0,255})$/ ) {
+            $report{$key} = $1;
+        } else {
+            warn "Invalid key [$key=$report{$key}] in report\n";
+            return;
+        }
+    }
+
+    # fire it, forget it
+    system( "chisel_send_report", map { +"-r" => "$_=$report{$_}" } keys %report );
+}

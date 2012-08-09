@@ -1,0 +1,170 @@
+#!/var/chisel/bin/perl -w
+#
+# chisel_pause
+# 
+# Prevents certain modules from running for a period of time to allow
+# short-term manual user account creation, etc.
+#
+# Pauses are managed per-module, with a file in /var/chisel/var/pause. The mtime
+# of this file specifies when the pause will 'end'. If the mtime of this file
+# is in the future the client will not execute the script.
+
+# TODO: -m to leave a message explaining the pause
+# TODO: pretty-print time
+# TODO: clean up pause files from modules that have been deactivated permanently
+# TODO: report the pause
+
+use warnings 'all';
+use strict;
+use Getopt::Long qw/:config require_order gnu_compat/;
+
+my %opt = (
+    'h|help'        => "Display this help",
+    'd|duration=i'  => "Duration to pause for in seconds  (default and max is 4*3600)",
+    'p|pause:s'     => "List of modules to pause          (default is all)",
+    'u|unpause:s'   => "List of modules to unpause        (default is all)",
+    'l|list'        => "List all currently paused modules",
+);
+
+my $pause_dir  = '/var/chisel/var/pause';
+my $script_dir = "/var/chisel/data/scripts";
+
+my %o;
+usage() unless GetOptions( \%o, keys %opt );
+usage() if $o{h};
+list()  if $o{l};
+usage( "The -p and -u options are mutually exclusive" ) if( exists $o{p} and exists $o{u} );
+usage( "One of -p and -u are required" ) unless( exists $o{p} || exists $o{u} );
+
+my $duration = $o{d} ? $o{d} : 4 * 3600;
+
+opendir( my $dh, $script_dir ) or die "Couldn't open $script_dir: $!";
+my @all_modules = grep { -f "$script_dir/$_" && $_ !~ m/.asc$/ && $_ ne 'Scripts.pm' } readdir $dh;
+closedir $dh;
+
+my @modules = split /,/, exists $o{p} ? $o{p} : $o{u};
+if( @modules ) {
+    foreach my $mod ( @modules ) {
+        unless( grep { $_ eq $mod } @all_modules ) {
+            warn "No such module '$mod'.\n";
+            exit 1;
+        }
+    }
+} else {
+    @modules = @all_modules;
+}
+
+if( exists $o{u} ) {
+    unpause( @modules );
+} elsif( exists $o{p} ) {
+    pause( @modules );
+}
+
+exit 0;
+
+
+sub unpause {
+    my @mods = @_;
+    foreach my $mod ( @mods ) {
+        my $file = "$pause_dir/$mod";
+        next unless -f $file;
+        my $r = unlink $file;
+        if( $r == 1 ) {
+            print "Unpaused $mod.\n";
+        } else {
+            warn "Unable to remove $file: $!.\n";
+        }
+    }
+}
+
+sub pause {
+    my @mods = @_;
+    my $now = time;
+    foreach my $mod ( @mods ) {
+        my $file = "$pause_dir/$mod";
+        my $then = $now + $duration;
+        unless( -f $file ) {
+            open my $fh, '>', $file
+              or print "Couldn't create $file: $!\n";
+            close $fh;
+        }
+        my $r = utime $then, $then, $file;
+        if( $r != 1 ) {
+            warn "Unable to touch $file: $!";
+        }
+        my $mtime = ( stat $file )[9];
+        if( defined( $mtime ) ) {
+            printf( "Pause successful, %s until %s resumes\n", format_seconds( $mtime - $now ), $mod );
+        } else {
+            warn "Couldn't pause $mod. Check $file\n";
+        }
+    }
+}
+
+sub list {
+    opendir(my $dh, $pause_dir) or die "Couldn't open $pause_dir: $!";
+    my @mods = grep { $_ =~ /^\w/ && -f "$pause_dir/$_" } readdir($dh);
+    closedir $dh;
+
+    my $now = time;
+    my $out;
+    foreach my $mod ( @mods ) {
+        my $mod_mtime = (stat "$pause_dir/$mod")[9];
+        next unless defined( $mod_mtime );
+        if( $mod_mtime > $now ) {
+            $out .= sprintf( "%-30s\t%-20s\n", $mod, format_seconds( $mod_mtime - $now ) );
+        }
+    }
+    if( $out ) {
+        printf( "%-30s\t%-20s\n", "Script", "Time Remaining" );
+        print $out;
+    } else {
+        print "No paused modules\n";
+    }
+    exit 0;
+}
+
+sub format_seconds {
+    my $sec = shift;
+    my $out;
+    $out = sprintf( "%02d:", $sec / 3600 );
+    $sec = $sec % 3600;
+    $out .= sprintf( "%02d:", $sec / 60 );
+    $sec = $sec % 60;
+    $out .= sprintf( "%02d", $sec );
+    return $out;
+}
+
+sub usage {
+    my $msg = shift;
+    $msg = "\n$msg\n" if( $msg );
+    $msg ||= '';
+
+    warn "Usage: $0 [options]\n";
+
+    my @array;
+    foreach my $key ( keys %opt ) {
+        my ( $left, $right ) = split /[=:]/, $key;
+        my ( $a,    $b )     = split /\|/,   $left;
+        if( $b ) {
+            $left = "-$a, --$b";
+        } else {
+            $left = "    --$a";
+        }
+
+        $left = substr( $left . ( ' ' x 20 ), 0, 20 );
+        push @array, "$left $opt{$key}\n";
+    }
+    warn sort @array;
+
+    # show pausable modules [bug 4619728]
+    opendir(my $dh, $script_dir) or die "Couldn't open $script_dir\n$msg";
+    my @mods = grep { $_ =~ /^\w+$/ && -f "$script_dir/$_" } readdir($dh);
+    closedir $dh;
+    warn "Pausable modules:\n";
+    foreach my $mod (@mods) {
+        warn "   $mod\n";
+    }
+
+    die "$msg\n";
+}

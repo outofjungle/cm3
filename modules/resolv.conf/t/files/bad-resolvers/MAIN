@@ -1,0 +1,5 @@
+# file with bad resolvers should fail sanity
+
+domain foo.com
+nameserver 1.1.1.5
+nameserver 2.3.4

@@ -1,0 +1,19 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ MAIN /],
+    max   => [qw/ MAIN /],
+);
+
+chomp( my $contents = read_file( filename => $files{MAIN} ) );
+
+$contents or exit 1;    # the file should be nonempty
+
+exit 0;

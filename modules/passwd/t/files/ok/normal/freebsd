@@ -1,0 +1,25 @@
+root:9TijCeS.JXOFk:0:0::0:0:Root:/:/bin/bash
+toor:9TijCeS.JXOFk:0:0::0:0:Root:/:/bin/bash
+daemon:*:1:1::0:0:Owner of many system processes:/root:/sbin/nologin
+operator:*:2:5::0:0:System &:/:/sbin/nologin
+bin:*:3:7::0:0:Binaries Commands and Source,,,:/:/sbin/nologin
+tty:*:4:65533::0:0:Tty Sandbox:/:/sbin/nologin
+kmem:*:5:65533::0:0:KMem Sandbox:/:/sbin/nologin
+games:*:7:13::0:0:Games pseudo-user:/usr/games:/sbin/nologin
+news:*:8:8::0:0:News Subsystem:/:/sbin/nologin
+man:*:9:9::0:0:Mister Man Pages:/usr/share/man:/sbin/nologin
+sshd:*:22:22::0:0:Secure Shell Daemon:/var/empty:/sbin/nologin
+smmsp:*:25:25::0:0:Sendmail Submission User:/var/spool/clientmqueue:/sbin/nologin
+mailnull:*:26:26::0:0:Sendmail Default User:/var/spool/mqueue:/sbin/nologin
+bind:*:53:53::0:0:Bind Sandbox:/:/sbin/nologin
+oracle:*:500:500::0:0:Oracle Exception:/home/oracle:/bin/bash
+lino:9TijCeS.JXOFk:20740:100::0:0:Fake lino:/home/lino:/usr/local/bin/bash
+fakebob:9TijCeS.JXOFk:45403:100::0:0:M Fake:/home/fakebob:/usr/local/bin/bash
+fakejill:sz7fRyq4kB5FU:16191:100::0:0:C Fake A:/home/fakejill:/usr/local/bin/bash
+llemon:sz7fRyq4kB5FU:40000:100::0:0:Liz Lemon:/home/llemon:/usr/local/bin/bash
+jmaroney:sz7fRyq4kB5FU:40001:100::0:0:Jenna Maroney:/home/jmaroney:/usr/local/bin/bash
+tjordan:sz7fRyq4kB5FU:40002:100::0:0:Tracy Jordan:/home/tjordan:/usr/local/bin/bash
+kparcell:sz7fRyq4kB5FU:40003:100::0:0:Kenneth Parcell:/home/kparcell:/usr/local/bin/bash
+hornberg:sz7fRyq4kB5FU:40004:100::0:0:Pete Hornberger:/home/hornberg:/usr/local/bin/bash
+jdonaghy:sz7fRyq4kB5FU:40005:100::0:0:Jack Donaghy:/home/jdonaghy:/usr/local/bin/bash
+dotcom:sz7fRyq4kB5FU:40006:100::0:0:Walter Slattery:/home/dotcom:/usr/local/bin/bash

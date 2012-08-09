@@ -1,0 +1,201 @@
+#!/var/chisel/bin/perl -wT
+
+use strict;
+
+# set PATH, PERL5LIB to things that will work in our environment
+BEGIN {
+    $ENV{'PATH'} = '/var/chisel/bin:/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin';
+    $ENV{'PERL5LIB'} = '/var/chisel/lib/perl5/site_perl';
+    $ENV{'CURL_CA_BUNDLE'} = $ENV{'ZSYNC_CA_BUNDLE'} = '/var/chisel/share/cacerts/ca.crt';
+    unshift @INC, '/var/chisel/lib/perl5/site_perl';
+}
+
+use File::Path;
+use Sys::Hostname ();
+use POSIX ();
+use Getopt::Long qw/:config require_order gnu_compat/;
+
+my %opt = (
+    'h|help'        => "Display this help",
+    'o|once'        => "Run only once, then exit",
+    'q|quiet'       => "Be quiet",
+    'd|directory=s' => "Work in this directory [/var/chisel/data]",
+    'i|interval=i'  => "Minimum interval in seconds for syncing [300]",
+    'Z|zsync'       => "Use zsync [always on; only present for compatibility]",
+    'version'       => "Print version number",
+);
+
+# $VERSION is set during build process by the Makefile
+my $VERSION = '::REPLACE_VERSION::';
+
+$| = 1;
+
+my %o;
+usage() unless GetOptions( \%o, keys %opt );
+usage() if( $o{h} );
+
+if( $o{version} ) {
+    print "$VERSION\n";
+    exit 0;
+}
+
+# Get and untaint data directory
+my $directory = '/var/chisel/data';
+if( defined $o{d} and $o{d} =~ m{^(/.+)$} ) {
+    $directory = $1;
+} elsif( defined $o{d} ) {
+    die "cannot use directory $directory\n";
+}
+
+# Get our hostname.
+my $hostname = Sys::Hostname::hostname();
+
+# sleep a minimum of 300 seconds between syncs
+defined( $o{i} ) or $o{i} = 300;
+my $minint = $o{i};
+
+# exit code we'll use
+my $exit = 0;
+
+while (1) {
+    my $er = eval {
+        my $start = time;
+        my $ancient_freebsd_hack = 0;
+
+        # ensure data.rsync exists
+        mkdir "$directory.rsync", 0700 if ! -d "$directory.rsync";
+        chown 0, 0, "$directory.rsync";
+        chmod 0700, "$directory.rsync";
+
+        # verify that we have our CA cert
+        copy_initial_ca_cert( "/var/chisel/share/cacerts" );
+
+        # FreeBSD 4 & 6.0-1 hack -- their cp doesn't have -l
+        if( $^O eq 'freebsd' and `uname -r` =~ /^(\d+)\.(\d+)/ and ( $1 == 4 || ( $1 == 6 && $2 <= 1 )) ) {
+            $ancient_freebsd_hack = 1;
+        }
+
+        # Figure out where our transport is
+        my $from = qx[chisel_get_transport --which-http];
+
+        if(
+               $? == 0
+            && $from =~ m{
+            ^(
+                https?://                   # http or https
+                (?: [\w\-\.]+ )             # hostname
+                (?: \: (?: \d+ ) )?         # optional port
+                /?                          # optional slash
+            )$
+            }x
+          )
+        {
+            $from = $1;
+        } else {
+            die "Call to chisel_get_transport failed!\n";
+        }
+
+        # Determine if we want to use a --interface option to azsync
+        my $want_interface = qx[chisel_get_transport --which-interface];
+        if( $? == 0 && $want_interface =~ m{^([\w\:\.\-]+)$} ) {
+            # Command succeeded
+            $want_interface = $1;
+        } else {
+            # Continue without preferring an interface
+            $want_interface = undef;
+        }
+
+        # Fetch down the files directory for our host
+        my @azsync_args = (
+          "--curl",
+          "--cpargs"          => ( $ancient_freebsd_hack ? "-Rp" : "-Rl" ),
+          "--from"            => "$from/zsync/out/$hostname",
+          "--to"              => "$directory.rsync",
+          "--external-verify" => "chisel_verify --update-keyrings -d",
+          "--rzsync"          => "/var/chisel/bin/recursive-zsync",
+          "--request-timeout" => 3600,
+        );
+
+        if( $want_interface ) {
+            push @azsync_args, "--interface", $want_interface;
+        }
+
+        system "azsync", @azsync_args;
+
+        if( $? ) {
+            my %report = (script => "sync", runtime => time - $start, code => $?, version => 0 );
+            system ("chisel_send_report", map {+ "-r" => "$_=$report{$_}" } keys %report);
+            die "Call to azsync failed!\n";
+        } else {
+            # Make sure the /var/chisel/data symlink exists
+            symlink "data.rsync/current" => $directory;
+
+            # Another hack for FreeBSD 4 & 6.0-1. need to touch the data and scripts directories (bug 3195985)
+            if( $ancient_freebsd_hack && -d "$directory/scripts" ) {
+                utime undef, undef, $directory;
+                utime undef, undef, "$directory/scripts";
+            }
+
+            my %report = ( script => "sync", runtime => time - $start, code => 0, version => 0 );
+            system ("chisel_send_report", map {+ "-r" => "$_=$report{$_}" } keys %report);
+        }
+
+        1;
+    };
+
+    if( ! $er ) {
+        my $error_msg = $@ || 'Something went wrong!';
+        chomp $error_msg;
+        print "[FAIL] $error_msg\n";
+        $exit = 1;
+    } else {
+        $exit = 0;
+    }
+
+    last if $o{o}; # run once
+
+    my $sleep = int(rand($minint / 2)) + $minint;
+    print "Sleeping for $sleep seconds\n";
+    sleep $sleep;
+}
+
+exit $exit;
+
+sub usage {
+    my $msg = shift;
+    $msg = "\n$msg\n" if( $msg );
+    $msg ||= '';
+
+    warn "Usage: $0 [options]\n";
+
+    my @array;
+    foreach my $key ( keys %opt ) {
+        my ( $left, $right ) = split /[=:]/, $key;
+        my ( $a,    $b )     = split /\|/,   $left;
+        if( $b ) {
+            $left = "-$a, --$b";
+        } else {
+            $left = "    --$a";
+        }
+
+        $left = substr( $left . ( ' ' x 20 ), 0, 20 );
+        push @array, "$left $opt{$key}\n";
+    }
+
+    warn sort @array;
+    die "$msg\n";
+}
+
+# chisel_client_sync does not contain the ca.crt file but an initial file
+# is part of a dependant pacakge, chisel_client_keys.
+#
+# this copies the initial cert in place if its missing
+sub copy_initial_ca_cert {
+    my $certhome = shift;
+
+    if(!-e "$certhome/ca.crt" && -e "$certhome/ca.initial.crt") {
+        system ("cp $certhome/ca.initial.crt $certhome/ca.crt");
+    }
+
+    die "Could not find CA cert (ca.crt) in $certhome\n"  if( !-e "$certhome/ca.crt" && !-e "$certhome/ca.initial.crt");
+}

@@ -1,0 +1,3 @@
+# file with no resolvers should fail sanity
+
+domain foo.com

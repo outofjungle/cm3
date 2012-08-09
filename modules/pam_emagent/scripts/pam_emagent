@@ -1,0 +1,16 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+# linux-only module
+exit 1 unless $^O eq 'linux';
+  
+install_file(
+    from     => $file,
+    to       => "/etc/pam.d/emagent",
+);

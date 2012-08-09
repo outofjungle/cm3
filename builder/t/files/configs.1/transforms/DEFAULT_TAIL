@@ -1,0 +1,20 @@
+sudoers:
+    - dedupe
+
+# these replacere lines use all three styles possible
+# (one string, two-arg list, three-arg list)
+
+passwd/linux:
+    - sortuid
+    - dedupe
+    - "replacere ^([^:]+):[^:]+: $1:x:"
+
+passwd/shadow:
+    - sortuid
+    - dedupe
+    - [ "replacere", '^([^:]+:[^:]+):.+$', '$1:13846:0:99999:7:::' ]
+
+passwd/freebsd:
+    - sortuid
+    - dedupe
+    - [ "replacere", "^([^:]+:[^:]+:[^:]+:[^:]+):(.+)$ $1::0:0:$2" ]

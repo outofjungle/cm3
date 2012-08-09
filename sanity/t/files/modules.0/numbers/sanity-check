@@ -1,0 +1,24 @@
+#!/usr/local/bin/perl -w
+
+# numbers sanity-check: look for a non-zero-length file that has lines containing only digits
+
+use strict;
+use warnings;
+require "lib/Chisel/SanityCheck.pm";
+import Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ MAIN /],
+    max   => [qw/ MAIN /],
+);
+
+my $contents = read_file( filename => $files{MAIN} );
+
+die if ! length $contents;
+die if $contents =~ /[^0-9\s]/;
+
+# looks ok
+exit 0;

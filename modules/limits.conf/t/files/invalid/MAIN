@@ -1,0 +1,7 @@
+oracle		hard	stack		
+oracle			memlock		unlimited
+		hard	memlock		unlimited
+@dba            soft               131072
+@dba            hard    nproc           131072
+@dba            soft    nofile          327629
+

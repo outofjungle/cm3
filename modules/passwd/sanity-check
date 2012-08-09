@@ -1,0 +1,153 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+use Regexp::Chisel qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ freebsd linux shadow / ],
+    max   => [ qw/ freebsd linux shadow blacklist / ],
+);
+
+###
+# check formats
+
+# smallest allowable passwd file
+my $MINSIZE = 10;
+
+# smallest number of login accounts allowed
+my $MINLOGINS = 10;
+
+# freebsd
+do {
+    my ($root, $toor);
+
+    my %names_seen;
+    my %uids_seen;
+    my $nlines = 0;
+    my $nlogins = 0;
+    my @lines = split "\n", read_file( filename => $files{freebsd} );
+    foreach my $e (@lines) {
+        my @ent = split /:/, $e;
+
+        $root = $ent[0] if $ent[0] eq 'root' && $ent[2] eq '0';
+        $toor = $ent[0] if $ent[0] eq 'toor' && $ent[2] eq '0';
+
+        my $n = $ent[0]; # username
+        
+        die "wrong number of fields: $n" unless @ent == 10;
+        die "missing name"               unless $ent[0];
+        die "bad name: $n"               unless $ent[0] =~ /^$RE_CHISEL_username\z/;
+        die "missing password: $n"       unless $ent[1];
+        die "missing shell: $n"          unless $ent[-1];
+        die "non-numeric UID: $n"        unless $ent[2] =~ /^\d+/;
+        die "non-numeric GID: $n"        unless $ent[3] =~ /^\d+/;
+
+        check_shell( $ent[0], $ent[2], $ent[-1] );
+
+        $names_seen{ $ent[0] } ++;
+        $uids_seen{ $ent[2] } ++;
+        $nlines ++;
+        
+        # count this as a login account if it looks like it has a decent uid/password and a login shell
+        $nlogins += 1 if $ent[1] !~ /^(\*|\!)/ && $ent[2] > 1000 && $ent[-1] ne '/sbin/nologin' && $ent[-1] !~ /push$/;
+    }
+    
+    die "missing root user for freebsd" unless $root;
+    die "missing toor user for freebsd" unless $toor;
+    die "not enough freebsd passwd entries ($nlines)" unless $nlines >= $MINSIZE + 1;
+    die "not enough freebsd login accounts ($nlogins)" unless $nlogins >= $MINLOGINS;
+    die "duplicate names found in freebsd file: " . join( ", ", grep { $names_seen{$_} > 1 } keys %names_seen )
+      unless $nlines == scalar keys %names_seen;
+    die "duplicate uids found in freebsd file: " . join( ", ", grep { $uids_seen{$_} > 1 && $_ != 0 } keys %uids_seen )
+      unless $nlines - 1 == scalar keys %uids_seen; # - 1 because we also require root/toor to exist with uid 0
+};
+
+# linux
+do {
+    my $root;
+    
+    # passwd
+    my %names_seen;
+    my %uids_seen;
+    my $nlines = 0; # number of linux entries -- will compare against number of shadow entries
+    my $nlogins = 0;
+    
+    my @lines = split "\n", read_file( filename => $files{linux} );
+    foreach my $e (@lines) {
+        my @ent = split /:/, $e;
+
+        $root = $ent[0] if $ent[0] eq 'root' && $ent[2] eq '0';
+
+        my $n = $ent[0]; # username
+        
+        die "wrong number of fields: $n" unless @ent == 7;
+        die "missing name"               unless $ent[0];
+        die "bad name: $n"               unless $ent[0] =~ /^$RE_CHISEL_username\z/;
+        die "non-shadowed password: $n"  unless $ent[1] eq 'x';
+        die "missing shell: $n"          unless $ent[-1];
+        die "non-numeric UID: $n"        unless $ent[2] =~ /^\d+/;
+        die "non-numeric GID: $n"        unless $ent[3] =~ /^\d+/;
+
+        check_shell( $ent[0], $ent[2], $ent[-1] );
+
+        $names_seen{ $ent[0] } ++;
+        $uids_seen{ $ent[2] } ++;
+        $nlines ++;
+        
+        # count this as a login account if it looks like it has a decent uid and a login shell
+        $nlogins += 1 if $ent[2] > 1000 && $ent[-1] ne '/sbin/nologin' && $ent[-1] !~ /push$/;
+    }
+
+    die "missing root user for linux" unless $root;
+    die "not enough linux passwd entries ($nlines)" unless $nlines >= $MINSIZE;
+    die "not enough linux login accounts ($nlogins)" unless $nlogins >= $MINLOGINS;
+    die "duplicate names found in linux file: " . join( ", ", grep { $names_seen{$_} > 1 } keys %names_seen )
+      unless $nlines == scalar keys %names_seen;
+    die "duplicate uids found in linux file: " . join( ", ", grep { $uids_seen{$_} > 1 } keys %uids_seen )
+      unless $nlines == scalar keys %uids_seen; # - 1 not a good idea for linux because there is no toor user
+    
+    # shadow
+    my @shadow_lines = split "\n", read_file( filename => $files{shadow} );
+    foreach my $e (@shadow_lines) {
+        chomp $e;
+        my @ent = split /:/, $e, -1;
+
+        my $n = $ent[0]; # username
+
+        die "wrong number of fields: $n"            unless @ent == 9;
+        die "missing name"                          unless $ent[0];
+        die "bad name: $n"                          unless $ent[0] =~ /^$RE_CHISEL_username\z/;
+        die "inappropriately shadowed password: $n" unless $ent[1] ne 'x';
+        die "name in shadow but not passwd: $n"     unless exists $names_seen{ $ent[0] };
+
+        $nlines --;
+    }
+
+    die "discrepancy in number of passwd vs shadow entries ($nlines)" unless $nlines == 0;
+};
+
+# require that system accounts (0 < UID < 1000) have /sbin/nologin as shell
+sub check_shell {
+    my ( $user, $uid, $shell ) = @_;
+
+    if(
+        $uid > 0 && $uid < 1000 && $shell ne '/sbin/nologin'
+        and !(
+            # exceptions
+            ( $uid == 500 && $user eq 'oracle' )    # bz3433771
+            || ( $uid == 600 && $user eq 'oracle' ) # bz4253736
+        )
+      )
+    {
+        die "system account has login shell: user=$user($uid) shell=$shell";
+    }
+
+    return 1;
+}
+
+exit 0;

@@ -1,0 +1,25 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ freebsd6 freebsd7 rhel4 rhel5 rhel6 /],
+    max   => [qw/ freebsd6 freebsd7 rhel4 rhel5 rhel6 /],
+);
+
+# the module.conf for pam_sudo ensures that we will only have approved contents in this file
+# because all actions are restricted by 'actions: []'
+# so just as a sanity check, confirm nothing here is too short (let's say, less than 10 bytes)
+
+foreach my $f ( keys %files ) {
+    if( -s $files{$f} < 10 ) {
+        die "pam_sudo file for $f is too short\n";
+    }
+}
+
+exit 0;

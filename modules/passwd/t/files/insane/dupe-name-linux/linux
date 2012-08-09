@@ -1,0 +1,24 @@
+root:x:0:0:Root:/:/bin/bash
+bin:x:1:1:bin:/bin:/sbin/nologin
+daemon:x:2:2:daemon:/sbin:/sbin/nologin
+adm:x:3:4:adm:/var/adm:/sbin/nologin
+lp:x:4:7:lp:/var/spool/lpd:/sbin/nologin
+sync:x:5:0:sync:/sbin:/sbin/nologin
+shutdown:x:6:0:shutdown:/sbin:/sbin/nologin
+halt:x:7:0:halt:/sbin:/sbin/nologin
+mail:x:8:12:mail:/var/spool/mail:/sbin/nologin
+news:x:9:13:news:/etc/news:/sbin/nologin
+uucp:x:10:14:uucp:/var/spool/uucp:/sbin/nologin
+operator:x:11:0:operator:/root:/sbin/nologin
+games:x:12:100:games:/usr/games:/sbin/nologin
+lino:x:20740:100:Fake lino:/home/lino:/bin/bash
+fakebob:x:45403:100:M Fake:/home/fakebob:/bin/bash
+fakejill:x:16191:100:C Fake A:/home/fakejill:/bin/bash
+llemon:x:40000:100:Liz Lemon:/home/llemon:/bin/bash
+jmaroney:x:40001:100:Jenna Maroney:/home/jmaroney:/bin/bash
+tjordan:x:40002:100:Tracy Jordan:/home/tjordan:/bin/bash
+kparcell:x:40003:100:Kenneth Parcell:/home/kparcell:/bin/bash
+hornberg:x:40004:100:Pete Hornberger:/home/hornberg:/bin/bash
+jdonaghy:x:40005:100:Jack Donaghy:/home/jdonaghy:/bin/bash
+dotcom:x:40006:100:Walter Slattery:/home/dotcom:/bin/bash
+dotcom:x:40007:100:The Bubble:/home/dotcom:/bin/bash

@@ -1,0 +1,25 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my %file = args()
+    or die;
+
+
+# different OSes use different ssh configs
+# the builder makes all of them since it doesn't know what we'll end up being
+my ( $os_name, $os_ver ) = ( get_os(), get_os_ver() );
+my $ssh_config = $os_name eq 'freebsd' && $os_ver =~ /^4/     ? $file{'ssh_config-freebsd4'}
+               : $os_name eq 'freebsd' && $os_ver =~ /^(6|7)/ ? $file{'ssh_config-freebsd'}
+               : $os_name eq 'linux'                          ? $file{'ssh_config-linux'}
+               :                                                undef;
+
+$ssh_config
+  or die "can't figure out which ssh_config to use";
+
+install_file(
+    from    => $ssh_config,
+    to      => "/etc/ssh/ssh_config",
+);

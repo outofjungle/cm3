@@ -1,0 +1,15 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files( # not _really_ a module so it should have no files
+    files => \%files,
+    min   => [],
+    max   => [],
+);
+
+exit 0;

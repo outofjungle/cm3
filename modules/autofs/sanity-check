@@ -1,0 +1,24 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my @auto_master;
+my @maps;
+
+
+my %files = args();
+if( $files{'auto.master'} ) {
+    @auto_master = split "\n", read_file( filename => $files{'auto.master'} );
+}
+
+@maps = map { m{/etc/(auto\.\w+)}; $1; }  @auto_master;
+
+check_files(
+    files => \%files,
+    min   => [ 'auto.master', @maps  ],
+);
+
+exit 0;
+

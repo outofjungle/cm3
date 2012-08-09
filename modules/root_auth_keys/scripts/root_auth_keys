@@ -1,0 +1,19 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+
+my $file = args()
+  or die;
+  
+my @pw_root = getpwnam 'root'; 
+my $dir =  $pw_root[7];
+
+die "Root user path in the passwd file is not /root" unless $dir eq '/root';
+
+
+install_file(from => $file,
+             to   => "/root/.ssh/authorized_keys",
+             mode => 0400,);
+

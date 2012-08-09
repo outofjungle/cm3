@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /bin/setuidgid chisel doozer run push --loop

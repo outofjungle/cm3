@@ -1,0 +1,90 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer build-generate:
+#   stdin: storable map like
+#       {
+#           raws => { name1 => blob1, ... },
+#           transforms => { id1 => { name => name1, yaml => yaml1 }, ... },
+#           module_conf => { ... }
+#           targets => [
+#               { transforms => [ id1, id2, ... ], file => "files/motd/MAIN" },
+#           ]
+#       }
+#   stdout: storable array that matches "targets" from input (index by index), like
+#       [
+#           { ok => 1, blob => "blob sha" },
+#           { ok => 0, message => "error msg"},
+#       ]
+
+use strict;
+
+use Log::Log4perl qw/:easy/;
+use Storable ();
+
+use Chisel::Builder::Engine;
+use Regexp::Chisel qw/:all/;
+
+my $engine = Chisel::Builder::Engine->new( application => 'builder' );
+$engine->setup;
+
+# print a nice message
+INFO "doozer build-generate starting";
+
+eval {
+    # read input from STDIN
+    my $stdin_text = do { local $/; <STDIN>; };
+    my $stdin = Storable::thaw( $stdin_text );
+
+    INFO "Processing " . scalar( @{ $stdin->{'targets'} } ) . " targets from stdin";
+
+    # 'raws' : replace hash with list of RawFile objects
+    my $ws = $engine->new_workspace;
+    my @raws =
+      map { Chisel::RawFile->new( name => $_, data => $ws->cat_blob( $stdin->{'raws'}{$_} ) ) }
+      keys %{ $stdin->{'raws'} };
+
+    # 'transforms' : replace hash with Transform object
+    my %transforms = map {
+        $_ => Chisel::Transform->new(
+            name        => $stdin->{'transforms'}{$_}{'name'},
+            yaml        => $stdin->{'transforms'}{$_}{'yaml'},
+            module_conf => $stdin->{'module_conf'},
+          )
+    } keys %{ $stdin->{'transforms'} };
+
+    # 'targets' : replace text IDs with Transform objects
+    my @targets = @{ $stdin->{'targets'} };
+    foreach my $target ( @targets ) {
+        @{ $target->{'transforms'} } =
+          map { $transforms{$_} or die "Transform ID $_ missing from STDIN data"; } @{ $target->{'transforms'} };
+    }
+
+    # Create a generator
+    my $generator = $engine->new_generator;
+
+    # Run the generator
+    my $gen_targets = $generator->generate( targets => \@targets, raws => \@raws );
+
+    # Dump results to STDOUT
+    print Storable::nfreeze( $gen_targets );
+
+    1;
+} or do {
+    FATAL "$@";
+    INFO "doozer build-generate stopping (dead)";
+    exit 1;
+};
+
+INFO "doozer build-generate stopping";
+
+exit 0;

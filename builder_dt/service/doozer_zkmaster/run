@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /bin/setuidgid chiseldata doozer run --interval 1 zkmaster --loop

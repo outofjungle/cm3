@@ -1,0 +1,24 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+# don't actually care what's in $file
+
+install_file(
+    from     => "VERSION",
+    to       => "/etc/chisel/version",
+);
+
+if( -f "REPO" ) {
+    install_file(
+        from     => "REPO",
+        to       => "/etc/chisel/repo",
+    );
+} else {
+    Scripts::unlink_file "/etc/chisel/repo";
+}

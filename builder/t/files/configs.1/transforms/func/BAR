@@ -1,0 +1,14 @@
+motd:
+    - append Hello BAR
+
+sudoers:
+    - append bob
+    - append carol
+
+passwd:
+    - remove bob
+
+---
+
+follows:
+    - func/F?O

@@ -1,0 +1,22 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ MAIN / ],
+    max   => [ qw/ MAIN / ],
+);
+
+# depends on /usr/share/zoneinfo on the sanity checker, but probably close enough for a sanity check
+chomp( my $contents = read_file( filename => $files{MAIN} ) );
+
+if( -f "/usr/share/zoneinfo/$contents" ) {
+    exit 0;
+} else {
+    die "not a time zone: $contents";
+}

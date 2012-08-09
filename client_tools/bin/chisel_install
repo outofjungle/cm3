@@ -1,0 +1,541 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use POSIX ();
+use Getopt::Long qw/ :config gnu_getopt /;
+use IPC::Open3 qw/open3/;
+
+
+
+# check options
+
+GetOptions(
+    \my %opt, "h|host=s@", "H|Hostfile=s", "branch=s",     "localhost",        "transport=s",
+    "keys=s", "force",     "retry:i",      "retry-wait=i", "reconfigure-only", "install-only",
+    "use-mirrored-pkgs=s", "help", "n|dryrun", "o|output=s",
+) or usage();
+
+
+usage() if $opt{help};
+usage("please don't mix -h/-H and --localhost") if ( $opt{h} || $opt{H} ) && $opt{localhost};
+usage("--transport $opt{transport} is not a well-formed hostname")
+    if defined( $opt{transport} ) && $opt{transport} !~ /^[a-zA-Z0-9\-\.]+$/;
+usage("--use-mirrored-pkgs $opt{'use-mirrored-pkgs'} is not a well-formed url")
+    if defined( $opt{'use-mirrored-pkgs'} ) && $opt{'use-mirrored-pkgs'} !~ /^[a-zA-Z0-9:\-\.\/]+$/;
+usage("--keys $opt{keys} is not a well-formed package name")
+    if defined( $opt{keys} ) && $opt{keys} !~ /^[\w\-\.]+$/;
+usage("--branch $opt{branch} is not a valid branch name")
+    if defined( $opt{branch} ) && $opt{branch} !~ /^(test|current|stable|nightly|quarantine)$/;
+usage("--retry $opt{retry} is not a valid retry count")
+    if defined( $opt{retry} ) && $opt{retry} !~ /^\d+$/;
+usage("--retry-wait $opt{'retry-wait'} is not a valid retry timer")
+    if defined( $opt{'retry-wait'} ) && $opt{'retry-wait'} !~ /^\d+$/;
+
+print "\n\nWARNING: --install-only option was used. I hope you know what you are doing.
+       This could break management of this host if access to a transport is not available
+       or your property is not onboarded.\n\n" if defined( $opt{"install-only"} );
+
+print "\n\nWARNING: --dryrun option was used. This implies the --install-only option since dryrun will need to 
+       install the chisel client. The chisel client will not be removed but will also not be started or set to start on boot.
+       Unless the --output option was passed, the dryrun diffs will be stored in 'cwd/chisel_install_logs'.\n\n" 
+       if defined( $opt{n} );
+       
+# get the list of hosts
+my @hosts;
+
+push @hosts, @{ $opt{h} } if $opt{h};
+
+if( $opt{H} ) {
+    if( $opt{H} eq '-' ) {
+        push @hosts, <STDIN>;
+    } else {
+        open my $fh, "<", $opt{H}
+          or die "open $opt{H}: $!";
+        
+        push @hosts, <$fh>;
+        close $fh;
+    }
+}
+
+chomp @hosts;
+
+# exit code we will eventually use
+my $exit = 0;
+
+# keep track of failures to print a report at the end
+my %exit_codes;
+
+# setup log dir
+my $out_dir = $opt{o} || "chisel_install_logs";
+mkdir $out_dir unless -d $out_dir;
+
+# suck in the install script after __END__
+my $script = do { local $/; <DATA> };
+
+# options we'll send to the install script
+my @script_opts;
+push @script_opts, "--force"            if $opt{force};
+push @script_opts, "--reconfigure-only" if $opt{'reconfigure-only'};
+push @script_opts, "--install-only"     if $opt{'install-only'};
+push @script_opts, "--transport",         "$opt{transport}"           if defined( $opt{transport} );
+push @script_opts, "--keys",              "$opt{keys}"                if defined( $opt{keys} );
+push @script_opts, "--branch",            "$opt{branch}"              if defined( $opt{branch} );
+push @script_opts, "--retry",             "$opt{retry}"               if defined( $opt{retry} );
+push @script_opts, "--retry-wait",        "$opt{'retry-wait'}"        if defined( $opt{'retry-wait'} );
+push @script_opts, "--use-mirrored-pkgs", "$opt{'use-mirrored-pkgs'}" if defined( $opt{'use-mirrored-pkgs'} );
+push @script_opts, "--dryrun",          if $opt{n};
+
+if( $opt{localhost} ) {
+    system( "/usr/bin/perl", "-we", $script, "--", @script_opts );
+    $exit = $exit_codes{'localhost'} = ( POSIX::WIFEXITED($?) ? POSIX::WEXITSTATUS($?) : 255 );
+} else {
+    usage( "nothing to do!" ) if ! @hosts;
+    
+    # single-quote escape the installer script
+    $script =~ s/\'/\'\\\'\'/go;
+    $script = "'$script'";
+    
+    # add install script options
+    my $cmd = "sudo /usr/bin/perl -we $script -- " . join( " ", @script_opts );
+    
+    # escaping mumbo jumbo
+    $cmd =~ s/(\\|\$)/\\$1/go;
+    $cmd =~ s/\"/\"\\\"\"/go;
+    my $sh_cmd = "/bin/sh -c \"( $cmd )\"";    
+    
+    foreach my $h (@hosts) {
+        warn "=== $h ===\n";
+        
+        #open log file 
+        open( LOG, '>', "$out_dir/$h" ) or die "Not not open logfile for writting: $!";
+
+             #system( "ssh", "-t", $h, "--", $sh_cmd );
+        my $ssh_cmd = "ssh -t  $h -- $sh_cmd" ;
+
+        my $ssh_pid = open3( my $tin, my $tout, undef, $ssh_cmd ); # undef merges stdout + stderr
+        
+        close $tin;
+        
+
+        
+        
+        while( my $rsp = <$tout> ) {
+            chomp $rsp;
+            print LOG $rsp # whatever rsync says is probably at least mildly important
+        }
+        print LOG "\n";
+        close $tout;
+        waitpid $ssh_pid, 0; # sets $?
+
+        # exit nonzero if anything fails
+        $exit = 1 if !POSIX::WIFEXITED($?) || POSIX::WEXITSTATUS($?);
+        $exit_codes{$h} = ( POSIX::WIFEXITED($?) ? POSIX::WEXITSTATUS($?) : 255 );
+    }
+}
+
+if( keys %exit_codes ) {
+    # print a report
+    print "\n=== INSTALL REPORT ===\n";
+    
+    # copied from %FAILCODE below
+    my %FAILCODE = (
+        'UNKNOWN'     => 40,    # some miscellaneous error
+        'FOUND_chisel'   => 41,    # can't install over another chisel
+        'FOUND_OTHER' => 42,    # some non-chisel tool is already there and --force wasn't given
+        'GETOPT'      => 44,    # bad arguments provided
+        'CONFIG_YAML' => 45,    # can't write /etc/chisel/config.yaml
+        'DT_ACTIVATE' => 46,    # couldn't run dt-activate
+        'NO_CONFIG'   => 47,    # host has no configuration available
+        'CANT_RUN'    => 48,    # couldn't run client_sync + client once
+    );
+    
+    foreach my $h ( sort { $exit_codes{$a} <=> $exit_codes{$b} } keys %exit_codes ) {
+        # see %FAILCODE below
+        
+        my $exit = $exit_codes{$h};
+        my $reason =
+            $exit == 0                        ? 'successfully installed'
+          : $exit == $FAILCODE{'FOUND_chisel'}   ? 'skipped, chisel already installed'
+          : $exit == $FAILCODE{'FOUND_OTHER'} ? 'skipped, found non-chisel configuration tool'
+\          : $exit == $FAILCODE{'DT_ACTIVATE'} ? 'chisel packages installed but dt-activate failed, please investigate'
+          : $exit == $FAILCODE{'NO_CONFIG'}   ? 'skipped, can\'t fetch configuration '
+          : $exit == $FAILCODE{'CANT_RUN'}    ? 'chisel packages installed but failed first run, please investigate'
+          :                                     'unknown error, suggest investigating';
+
+        print "$h: $reason\n";
+    }
+}
+
+exit $exit;
+
+sub usage {
+    my $msg = shift;
+    my $USAGE = <<EOT;
+usage: chisel_install ( -h hostname | -H hostfile | -H - ) [options]
+options:
+     -h <host>    install chisel by sshing to "host"
+     -H <file>    install chisel by sshing to hostnames in "file" (- for stdin)
+    --br <branch> install from dist branch <branch> [default: stable]
+    --localhost   install chisel on this host instead of sshing to another
+    --retry <n>   attempt to sync more than once
+
+useless options:
+    --transport <host>    use this transport [default: transport]
+    --keys <package>      use this public key package [default: chisel_client_keys]
+    --force               ignore existing cm systems and all other errors
+    --reconfigure-only    install chisel and configure files, but do not restart
+                          services and do not start chisel (used by ybiip)
+    --install-only        install chisel and start services but do not configure files
+                          (useful to install client when transports not ready yet)
+    --use-mirrored-pkgs   use this host [default: transport] for
+                          fetching client pkgs
+
+At least one line per host will be printed over stdout.
+
+EOT
+
+    $USAGE = "$msg\n\n$USAGE" if $msg;
+    die "$USAGE";
+}
+
+__END__
+#!/usr/bin/perl -w
+
+use 5.005;
+use strict;
+use Getopt::Long;
+use POSIX ();
+use Sys::Hostname ();
+
+# override user's PATH to match the one our svscanboot would put in (minus /var/chisel/bin)
+$ENV{PATH} = "/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin:/usr/X11R6/bin";
+
+my %FAILCODE = (
+    'UNKNOWN'     => 40,    # some miscellaneous error
+    'FOUND_chisel'   => 41,    # can't install over another chisel
+    'FOUND_OTHER' => 42,    # some non-chisel tool is already there and --force wasn't given
+    'GETOPT'      => 44,    # bad arguments provided
+    'CONFIG_YAML' => 45,    # can't write /etc/chisel/config.yaml
+    'DT_ACTIVATE' => 46,    # couldn't run dt-activate
+    'NO_CONFIG'   => 47,    # host has no configuration available
+    'CANT_RUN'    => 48,    # couldn't run client_sync + client once
+);
+
+my %opt = ( 'retry-wait' => 60 );
+GetOptions( \%opt, "transport=s", "use-mirrored-pkgs=s", "keys=s", "force", "branch=s", "retry:i", "retry-wait=i", "reconfigure-only", "install-only", "dryrun" )
+  or fail('GETOPT');
+
+# defaults for transport/keys
+my $transport = $opt{transport} || 'transport';
+my $pkgmirror = $opt{'use-mirrored-pkgs'} || 'http://${transport}:443';
+my $keys      = $opt{keys}      || 'chisel_client_keys';
+
+# number of times to retry client sync [default is 45 if --retry is specified alone]
+my $retry = ( defined( $opt{'retry'} ) ? $opt{'retry'} || 45 : 0 );
+
+# how long to wait in between retries
+my $retry_wait = ( $opt{'retry-wait'} && $opt{'retry-wait'} > 0 ? $opt{'retry-wait'} : 0 );
+
+# check the transport for a configuration, otherwise we refuse to install
+# do this first, so it trumps the 'other cm' check -- this is useful because it will make
+# it clear to people when chisel has no hope of working (even if it's installed and running)
+while( !$opt{'install-only'} && $retry >= 0 ) {
+    if(( ! check_for_config( "https://$transport:443" ) ) && ( ! $opt{force} )) {
+        warn "no configuration available at https://$transport:443/\n";
+        
+        if( $retry > 0 ) {
+            warn "[ERROR] Will try again in $retry_wait seconds ($retry more)\n";
+            $retry--;
+            sleep $retry_wait;
+        } else {
+            # failed too many times
+            fail('NO_CONFIG');
+        }
+    } else {
+        # no need to try more
+        last;
+    }
+}
+
+if( my $cm = check_for_cm() ) { # possible conflict
+    warn "existing cm found: $cm\n";
+    
+    if( $cm eq 'chisel' ) {
+        # you can't override another chisel with --force
+        fail('FOUND_chisel');
+    } elsif( !$opt{force} ) {
+        fail('FOUND_OTHER');
+    }
+}
+
+# write /etc/chisel/config.yaml if needed
+# or remove it if present but not needed
+if( $transport ne 'transport' ) {
+    write_config_yaml($transport);
+} else {
+    rm_config_yaml();
+}
+
+# build the  install command
+my @rpm = ();
+if( $opt{'use-mirrored-pkgs'} ) {
+    warn "[WARN] using packages from $pkgmirror\n";
+    @rpm = ( qw{ rpm -ivh $pkgs } );
+    my $mirror_url = $pkgmirror . '/' . $^O . '/';
+    my @pkgs = ( qw{ chisel_client-latest.tgz chisel_client_dt-latest.tgz chisel_client_sync-latest.tgz }, "$keys-latest.tgz" );
+
+    foreach my $pkg ( @pkgs ) {
+        push @rpm, $mirror_url . $pkg;
+    }
+    if ( $^O eq 'freebsd' ) {
+        push @rpm, $mirror_url . "chisel_client_perl-latest.tgz";
+    }
+} else {
+    @rpm = ( qw{ rpm -ivh chisel_client chisel_client_sync chisel_client_dt }, $keys );
+}
+
+
+
+if( $opt{'use-mirrored-pkgs'} ) {
+    push @rpm, "-nolocal-repo";
+}
+
+# attempt to install the chisel packages with rpm
+while( $retry >= 0 ) {
+    warn "[RPM] @rpm\n";
+    system( @rpm );
+
+    if( $? ) {
+        warn "[ERROR] @rpm\n";
+
+        if( $retry > 0 ) {
+            warn "[ERROR] Will try again in $retry_wait seconds ($retry more)\n";
+            $retry--;
+            sleep $retry_wait;
+        } else {
+            # failed too many times
+            fail('RPM');
+        }
+    } else {
+        # no need to try more
+        last;
+    }
+}
+
+# try to run client_sync successfully at least once
+while( !$opt{'install-only'} && $retry >= 0 ) {
+    # add /var/chisel/bin to the PATH, now it fully matches what svscanboot would have used
+    local $ENV{PATH} = "/var/chisel/bin:$ENV{PATH}";
+    
+    system( "/var/chisel/bin/chisel_client_sync -Z --once" );
+    if(( $? || ! -d "/var/chisel/data" ) && ( ! $opt{force} )) {
+        warn "[ERROR] /var/chisel/bin/chisel_client_sync -Z --once\n";
+        
+        if( $retry > 0 ) {
+            warn "[ERROR] Will try again in $retry_wait seconds ($retry more)\n";
+            $retry--;
+            sleep $retry_wait;
+        } else {
+            # failed too many times
+            fail('CANT_RUN');
+        }
+    } else {
+        # no need to try more
+        last;
+    }
+}
+
+# run client scripts
+do {
+    # add /var/chisel/bin to the PATH, now it fully matches what svscanboot would have used
+    local $ENV{PATH} = "/var/chisel/bin:$ENV{PATH}";
+    local $ENV{chisel_RECONFIGURE_ONLY} = ( $opt{'reconfigure-only'} ? "1" : "" );
+    
+    # create arg list
+    my $client_args = ( $opt{'dryrun'} ? "--once --dryrun" : "--once --quiet" );
+
+    # first selfupdate to make sure we have the most recent client
+    system( "/var/chisel/bin/chisel_client --run=selfupdate $client_args" );
+    if( $? ) {
+        warn "[ERROR] /var/chisel/bin/chisel_client --run=selfupdate $client_args \n";
+        fail('CANT_RUN') unless $opt{force};
+    }
+
+    # next do user management and hosts.allow
+    system( "/var/chisel/bin/chisel_client --run=passwd,group,sudoers,hosts.allow $client_args" );
+    if( $? ) {
+        warn "[ERROR] /var/chisel/bin/chisel_client --run=passwd,group,sudoers,hosts.allow $client_args \n";
+        fail('CANT_RUN') unless $opt{force};
+    }
+
+    # now make home directories
+    system( "/var/chisel/bin/chisel_client --run=homedir $client_args" );
+    if( $? ) {
+        warn "[ERROR] /var/chisel/bin/chisel_client --run=homedir $client_args\n";
+        fail('CANT_RUN') unless $opt{force};
+    }
+
+    # now run everything EXCEPT nrclient or the stuff we just ran
+    if( opendir SCRIPT_DIR, "/var/chisel/data/scripts" ) {
+        my @scripts_to_run = grep {
+            -x "/var/chisel/data/scripts/$_"    # must be executable
+              && !/^\./                      # skip dotfiles as well as . & ..
+              && !/,/                        # comma is the separator in --run=, and it's illegal in script names anyway
+              && !/^(Scripts\.pm|selfupdate|passwd|group|sudoers|hosts\.allow|homedir|nrclient)$/
+        } readdir SCRIPT_DIR;
+        closedir SCRIPT_DIR;
+
+        # would be surprised if there was nothing left, but you never know
+        # so check it anyway
+        if( @scripts_to_run ) {
+            my $cmd = "/var/chisel/bin/chisel_client --run=" . join( ',', map { quotemeta $_ } @scripts_to_run ) . " $client_args ";
+            system( $cmd );
+            if( $? ) {
+                warn "[ERROR] $cmd\n";
+                fail('CANT_RUN') unless $opt{force};
+            }
+        }
+    } else {
+        warn "[ERROR] can't list directory /var/chisel/data/scripts\n";
+        fail('CANT_RUN') unless $opt{force};
+    }
+} unless $opt{'install-only'};
+
+# Configure daemontools unless we are in dry run
+do {
+    if( $opt{'reconfigure-only'} ) {
+        # activate daemontools but do not start
+        system( "/var/chisel/sbin/dt-activate -a" );
+        if( $? ) {
+            warn "[ERROR] /var/chisel/sbin/dt-activate -a";
+            fail('DT_ACTIVATE');
+        }
+    } else {
+        # activate and start daemontools
+        system( "/var/chisel/sbin/dt-activate -a -s" );
+        if( $? ) {
+            warn "[ERROR] /var/chisel/sbin/dt-activate -a -s";
+            fail('DT_ACTIVATE') unless $opt{force};
+        }
+    }
+} unless $opt{'dryrun'};
+
+exit 0;
+
+sub fail {
+    my $string = shift;
+    my $code = $FAILCODE{ $string } || $FAILCODE{'UNKNOWN'};
+    exit $code;
+}
+
+sub check_for_cm {
+    return "puppet"       if -e "PATH";
+    return "chef"  if -e "PATH";
+    
+    
+    # check for a running chisel installation
+    # if it's only partially installed we'll say it's not, so the script tries to finish the job
+    if( -d "/var/chisel" ) {
+        # partial install if the major executables are missing 
+        return if ! ( -x "/var/chisel/bin/chisel_client" && -x "/var/chisel/bin/chisel_client_sync" );
+        
+        # partial install if supervise is not running for either service
+        # NOTE: svok returns ok even if the service is stopped, it only checks for supervise (this is a good thing)
+
+        system( "/var/chisel/bin/svok", "/var/chisel/service/chisel_client" );
+        return if $?;
+
+        system( "/var/chisel/bin/svok", "/var/chisel/service/chisel_client_sync" );
+        return if $?;
+        
+        # looks like chisel is installed and running
+        # maybe it doesn't work, but that's not our problem
+        return "chisel";
+    }
+    
+    return;
+}
+
+sub write_config_yaml {
+    my $transport_host = shift || 'transport';
+    
+    mkdir "/etc/chisel", 0755 if ! -d "/etc/chisel";
+    chmod 0755, "/etc/chisel";
+    chown 0, 0, "/etc/chisel";
+    
+    open CONFIGYAML, ">/etc/chisel/config.yaml.$$"
+      or do {
+          warn "open /etc/chisel/config.yaml.$$: $!";
+          fail('CONFIG_YAML');
+      };
+    
+    print CONFIGYAML "transport_host: $transport_host\n";
+    close CONFIGYAML;
+    
+    chmod 0644, "/etc/chisel/config.yaml.$$";
+    chown 0, 0, "/etc/chisel/config.yaml.$$";
+    rename "/etc/chisel/config.yaml.$$" => "/etc/chisel/config.yaml"
+      or do {
+          warn "open /etc/chisel/config.yaml: $!";
+          fail('CONFIG_YAML');
+      };
+}
+
+sub rm_config_yaml {
+    if( -f "/etc/chisel/config.yaml" ) {
+        # probably not the end of the world if we can't rm it
+        unlink "/etc/chisel/config.yaml" or warn "can't unlink /etc/chisel/config.yaml ($!), continuing\n";
+    }
+}
+
+sub check_for_config {
+    my $baseurl  = shift || 'https://transport:443';
+    my $hostname = Sys::Hostname::hostname();
+    my $testurl  = "$baseurl/zsync/out/$hostname/VERSION";
+
+    if( $^O eq 'freebsd' ) {
+        # fetch doesn't seem to care whether or not the certificate is valid
+        # so don't include an option for that
+
+        system(
+            "/usr/bin/fetch",
+
+            "-q",      # mostly quiet; still print errors, though
+            "-T15",    # timeout 15 seconds
+            "-o", "/dev/null",    # don't print content
+
+            $testurl,
+        );
+        return ( $? ) ? undef : 1;
+    }
+
+    elsif( $^O eq 'linux' ) {
+        system(
+            "/usr/bin/curl",
+
+            "-m", "15",           # timeout 15 seconds
+            "-s", "-S", "-f",     # print a nice little error message and exit nonzero in case of failure
+            "-o", "/dev/null",    # print nothing in case of success
+            "-k",                 # don't validate ssl certificate (we don't have the CA cert yet...)
+
+            $testurl,
+        );
+
+        return ( $? ) ? undef : 1;
+    }
+
+    else {
+        return undef;
+    }
+}

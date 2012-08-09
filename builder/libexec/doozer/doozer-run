@@ -1,0 +1,59 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+use strict;
+use Getopt::Long qw/ :config gnu_getopt require_order /;
+use POSIX qw/ setsid setuid setgid strftime /;
+
+# allow some cmdline options
+my $USAGE = "usage: doozer run [--interval nseconds] doozer-command\n";
+
+# default interval if unspecified: 1 sec
+my %opt = ( interval => 1 );
+die $USAGE unless GetOptions( \%opt, "interval=i" );
+die $USAGE unless @ARGV;
+
+setsid;
+
+$SIG{INT} = $SIG{HUP} = $SIG{TERM} = sub {
+    local $SIG{INT} = $SIG{HUP} = $SIG{TERM} = 'IGNORE';
+    kill TERM => -$$;
+    exit 1;
+};
+
+# redirect stderr to stdout
+open STDERR, ">&STDOUT" or die;
+
+# save our name so we can add ps statuses
+my $prog = "$0 [@ARGV]";
+
+# string with status about our last run
+my $lastrun = "first run; ";
+
+my $status_str;
+
+while( 1 ) {
+    my $until = time + $opt{'interval'};
+    my $until_str = strftime( "%H:%M:%S %Z", localtime( $until ) );
+
+    if( $status_str ) {
+        $0 = $status_str = "$prog [${lastrun}sleeping until $until_str]";
+        warn( ( scalar localtime ) . " $status_str\n" );
+        sleep $opt{'interval'};
+    }
+
+    $0 = $status_str = "$prog [${lastrun}running]";
+    warn( ( scalar localtime ) . " $status_str\n" );
+    system( 'doozer', @ARGV );
+
+    $lastrun = $? ? "failed last run; " : "";
+}

@@ -1,0 +1,6 @@
+
+
+ Hostname: ::hostname::
+       IP: ::ip::
+I'm in the role foo
+This is an extra line added for tests

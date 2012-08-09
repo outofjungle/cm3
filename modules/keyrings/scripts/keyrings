@@ -1,0 +1,45 @@
+#!/usr/bin/perl -w
+
+use strict;
+use File::Temp qw/tempdir/;
+use Scripts qw/:all/;
+
+my %files = args()
+  or die;
+
+$ENV{PERL5LIB} = "/var/chisel/lib/perl5/site_perl";
+
+# first install the new signatures and keyrings into a temporary directory
+
+my $home = "/var/chisel/share/gnupg";
+my $temp = tempdir( "keyXXXXXX", DIR => $home, CLEANUP => 1 );
+
+for my $f ( qw/ humanring.gpg humanring.gpg.asc autoring.gpg autoring.gpg.asc / ) {
+    install_file(
+        from => $files{ $f },
+        to   => "$temp/$f",
+    );    
+}
+
+# let's verify that the new keyrings are signed properly
+
+system( "chisel_verify", "-R", "$temp/humanring.gpg" );
+die "new humanring.gpg is not properly signed\n" if($?);
+
+system( "chisel_verify", "-R", "$temp/autoring.gpg" );
+die "new autoring.gpg is not properly signed\n" if($?);
+
+# now we're going to install the new keyrings and attempt to use them to verify
+# the /var/chisel/data directory that we already have
+
+install_file(
+    from => "$temp/humanring.gpg",
+    to   => "$home/humanring.gpg",
+    test => "chisel_verify -d /var/chisel/data",
+);
+
+install_file(
+    from => "$temp/autoring.gpg",
+    to   => "$home/autoring.gpg",
+    test => "chisel_verify -d /var/chisel/data",
+);

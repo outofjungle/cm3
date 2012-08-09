@@ -1,0 +1,65 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+# doozer show-transports:
+#  - display push status for this doozer
+
+use strict;
+use warnings;
+use Chisel::Builder::Engine;
+use Log::Log4perl qw/:easy/;
+use Sys::Hostname;
+use POSIX 'strftime';
+use YAML::XS ();
+
+my $engine = Chisel::Builder::Engine->new;
+$engine->setup;
+
+# ensure pushstat file exists
+my $pushstat_file = $engine->config("var") . "/status/pushstat";
+
+if( ! -f $pushstat_file ) {
+    die "$pushstat_file does not exist!\n";
+}
+
+# load push status
+my $pushstat = YAML::XS::LoadFile( $pushstat_file );
+
+if( ! $pushstat || ref $pushstat ne 'HASH' ) {
+    die "$pushstat_file has no data!\n";
+}
+
+# print a line per transport
+print "* Transports:\n";
+
+my @sorted = map { $_->[0] }
+  sort { $a->[1] cmp $b->[1] }
+  map { [ $_, /(\w+\.foo\.com$)/ ? lc "$1$_" : lc "zzz$_" ] }
+  keys %$pushstat;
+
+printf "* %-45s %10s %25s %25s\n", "transport", "status", "last push", "when";
+foreach my $transport (@sorted) {
+    my $status = $pushstat->{$transport}{currentdir} ? 'pushing' : 'idle';
+
+    my $lastpush
+        = $pushstat->{$transport}{error}
+        ? 'error'
+        : $pushstat->{$transport}{lastdir} || 'unknown';
+
+    my $when
+        = $pushstat->{$transport}{lasttime}
+        ? strftime( "%b %d %H:%M:%S %Y UTC",
+        gmtime $pushstat->{$transport}{lasttime} )
+        : 'unknown';
+    
+    printf "- %-45s %10s %25s %25s\n", $transport, $status, $lastpush, $when;
+}

@@ -1,0 +1,38 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my @amd_conf;
+my @sections;
+my @maps;
+
+my %files = args();
+if( $files{'amd.conf'} ) {
+    my @tmp = split "\n", read_file( filename => $files{'amd.conf'} );
+    foreach( @tmp ) {
+        next if(/^\s*#/);
+        push( @amd_conf, $_ );
+    }
+}
+
+# put amd.conf sections into array. 
+# The sections define the [global] policy and [mount]
+@sections = grep(/\w+/, @amd_conf);
+
+# Get each map name so we can validate there is a config file for it
+# Forcing the search path of amd.conf to /etc/amd.maps so all map files assumed to be in /etc/amd.maps
+@maps = map { m{=\s*([\w+\.\-]+)$}; $1; } grep(/map_name/, @amd_conf);
+
+die "Must have more than one [section] in amd.conf" unless( scalar @sections > 1 );
+die "Must have a [ global ] section" unless grep(/\[\s*global\s*\]/, @sections);
+die "Must have a global search_path set to /etc/amd.maps" unless grep(/search_path\s*=\s*\/etc\/amd.maps/, @amd_conf);
+
+check_files(
+    files => \%files,
+    min   => [ 'amd.conf','amd.rc', @maps ],
+    mmax  => [ 'amd.conf','amd.rc', @maps ],
+);
+
+exit 0;

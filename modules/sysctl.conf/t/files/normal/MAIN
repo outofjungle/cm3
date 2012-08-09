@@ -1,0 +1,7 @@
+kernel.shmmni = 4096
+kernel.shmall = 2097152
+fs.file-max = 327679
+net.ipv4.ip_local_port_range = 1024 65000
+kernel.msgmni = 2878
+kernel.core_pattern = core.%e.%u
+kernel.core_pattern = /var/crash/core.%e.%u

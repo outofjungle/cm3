@@ -1,0 +1,240 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use warnings;
+use strict;
+
+use Getopt::Long;
+use File::Path;
+use Chisel::Manifest;
+use LWP::UserAgent;
+use File::Spec ();
+use Fcntl;
+
+my %opt = (
+    'h|help'      => 'Print this message',
+    'from=s'      => 'Url to sync from, eg http://host/dir/',
+    'to=s'        => 'Directory to sync to',
+    'curl'        => 'Use curl instead of LWP to fetch the Manifest.',
+    'sslcert=s'   => "Client certificate file (SSL)",
+    'sslkey=s'    => "Private key file name (SSL)",
+    'interface=s' => "Attempt to use this interface name, IP address or host name as the source of http connections",
+    'request-timeout=i' => "Timeout for each http request made",
+);
+
+my %o;
+die "bad options" unless GetOptions( \%o, keys %opt );
+
+die "need --from url\n" unless $o{from};
+die "need --to directory\n" unless $o{to};
+
+recursive_zsync_fetch($o{from}, $o{to});
+
+exit 0;
+
+# $o{from} is of the form http://host/path/
+# and we assume http://host/path/file_manifest.json exists
+# structure is http://host/path/ -
+#                              /.zsync.data/
+#                              /.zsync.data/
+
+sub recursive_zsync_fetch {
+    my ($base_url, $local_path) = @_;
+    -d $local_path or mkdir $local_path or die "mkdir $local_path: $!";
+    # make my local manifest (from $local_path)
+    my $local_manifest = new Chisel::Manifest;
+    chdir($local_path) or die "can't chdir to $local_path: $!\n";
+    $local_manifest->add_dir(".")->compute_manifest;
+
+    # load the remote manifest (from $base_url/azsync.manifest.json)
+    my $remote_manifest = new Chisel::Manifest;
+    
+    if( $o{curl} ) {
+        # Curl options used:
+        # -q for ignore config file,
+        # -s for silent,
+        # -S for show errors,
+        # -f fail with exit code (22),
+        my @curlopt = ( "-q", "-s", "-S", "-f" );
+
+        # Respect --request-timeout for curl
+        if( $o{'request-timeout'} ) {
+            push @curlopt, "-m", $o{'request-timeout'};
+        }
+
+        # Respect --sslcert for curl
+        if( $o{'sslcert'} ) {
+            push @curlopt, "--cert", $o{'sslcert'};
+        }
+
+        # Respect --sslkey for curl
+        if( $o{'sslkey'} ) {
+            push @curlopt, "--key", $o{'sslkey'};
+        }
+
+        # Respect --interface for curl
+        if( $o{'interface'} ) {
+            push @curlopt, "--interface", $o{'interface'};
+        }
+
+        my $curlcmd = "curl " . join( " ", map { quotemeta $_ } @curlopt, "$base_url/azsync.manifest.json" );
+        my $response = qx[$curlcmd];
+        die "manifest fetch failed: $base_url\n" unless $? == 0;
+        $remote_manifest->load_manifest_data( $response );
+    } else {
+        my $ua = LWP::UserAgent->new( timeout => 10 );
+
+        # Respect --request-timeout for LWP
+        if( $o{'request-timeout'} ) {
+            $ua->timeout( $o{'request-timeout'} );
+        }
+
+        # Don't respect --sslcert or --sslkey for LWP
+        if( $o{'sslcert'} || $o{'sslkey'} ) {
+            warn "WARNING: Options --sslcert and --sslkey are ignored when using LWP.\n";
+        }
+
+        # Respect --interface for LWP
+        if( $o{'interface'} ) {
+            $ua->local_address( $o{'interface'} );
+        }
+
+        my $response = $ua->get( "$base_url/azsync.manifest.json" );
+        die "manifest fetch failed: $base_url\n" unless $response->is_success;
+        $remote_manifest->load_manifest_data( $response->decoded_content );
+    }
+    
+    # first prune any extras, we need to do this in case a directory changed into a file or something
+    clean_extras($local_path,$remote_manifest);
+    # now iterate the manifest, and
+    # * create any directories
+    # * zsync once for every type=file
+    for my $remote_manifest_entry (@{$remote_manifest->{computed_manifest}}) {
+
+        # names that this file is known by
+        my ($first_name, @other_names) = $remote_manifest_entry->names;
+        my $type = $remote_manifest_entry->{data}{type};
+        # if there is an identical entry in the local_manifest, we can skip pulling this entry
+        next if $local_manifest->contains_entry($remote_manifest_entry, [ 'name', 'md5', keys %{$remote_manifest_entry->{data}} ]);
+        next if $first_name eq "./azsync.manifest.json"; # needed?
+        next unless $type eq 'file' || $type eq 'link';
+        # create paths for this file to go into
+        for my $n ($first_name, @other_names) {
+            my $dir_name = File::Basename::dirname($n);
+            if( $dir_name ne '.' ) {
+                die "insecure pathspec in manifest: $n\n" unless is_safe_path($local_path, $dir_name);
+                system_or_die( "mkdir", "-p", "$local_path/$dir_name" ) if ! -d "$local_path/$dir_name";
+            }
+        }
+        
+        if( $type eq 'file' ) {
+            # Zsync options used:
+            # -q for quiet
+            my @zsync_opts = ( "-q" );
+
+            # Respect --request-timeout for zsync
+            if( $o{'request-timeout'} ) {
+                push @zsync_opts, "-T", $o{'request-timeout'};
+            }
+
+            # Respect --sslcert for zsync
+            if( $o{'sslcert'} ) {
+                push @zsync_opts, "-R", $o{'sslcert'};
+            }
+
+            # Respect --sslkey for zsync
+            if( $o{'sslkey'} ) {
+                push @zsync_opts, "-S", $o{'sslkey'};
+            }
+
+            # Respect --interface for zsync
+            if( $o{'interface'} ) {
+                push @zsync_opts, "-I", $o{'interface'};
+            }
+
+            system_or_die( "zsync", @zsync_opts, "-o", "$local_path/$first_name","$base_url/azsync.data/$first_name" );
+
+            # * if there were other names, hard link them
+            for my $n (@other_names) {
+                unlink "$local_path/$n";
+                link "$local_path/$first_name", "$local_path/$n" or
+                  die "failed to hardlink $local_path/$first_name to $local_path/$n: $!\n";
+            }
+        } elsif( $type eq 'link' ) {
+            my $target = $remote_manifest_entry->{data}{link};
+            die "symlinks may only have one name, manifest lists multiple ($first_name @other_names)\n" if @other_names;
+            
+            unlink "$local_path/$first_name";
+            symlink $target, "$local_path/$first_name" or
+              die "failed to make symlink $local_path/$first_name -> $target: $!\n";
+        }
+    }
+    # clean extras again, sometimes zsync leaves little presents behind
+    clean_extras($local_path,$remote_manifest);
+    # chmod, chown, etc
+    $remote_manifest->enforce();
+    # make sure we did everything properly
+    $remote_manifest->validate();
+}
+
+# given a local path ($local_path) and Chisel::Manifest ($manifest), remove any extra
+# files and directories which are not in the manifest
+sub clean_extras {
+    my ($local_path,$manifest) = @_;
+    
+    my @extra = ( $manifest->extra_files({path => $local_path}), $manifest->extra_dirs({path => $local_path}) );
+    for my $f (@extra) {
+        next if -d $f && ! -l $f;
+        unlink $f or die "can't unlink $f";
+    }
+    for my $f (reverse sort {length $a <=> length $b} @extra) {
+        next unless -d $f && ! -l $f;
+        rmdir $f or die "can't rmdir $f";
+    }
+    
+    # check for extras again to make sure we got them all
+    @extra = ( $manifest->extra_files({path => $local_path}), $manifest->extra_dirs({path => $local_path}) );
+    die "can't unlink some extras: @extra" if @extra;
+}
+
+# figure out if some $inner_path escapes $outer_path
+# $inner_path does not need to fully exist, since it will be mkdir -p'd later
+# it just can't have symlinks, ..'s, etc
+sub is_safe_path {
+    my ($outer_path, $inner_path) = @_;
+    # $outer_path doesn't exist, wtf?
+    return 0 unless -d $outer_path;
+    # break $inner_path into components
+    my @d = File::Spec->splitdir($inner_path);
+    # there's no good reason to have these as filenames in the manifest and they could be bad
+    return 0 if grep { $_ eq '' || $_ eq '/' || $_ eq '.' || $_ eq '..' } @d;
+    # there's no good reason to use symlinks as part file paths in the manifest
+    # since it should be totally self contained
+    # build all the path prefixes and check if any of them are symlinks
+    for my $di (0..$#d) {
+        my $inner_path_prefix = File::Spec->catdir(@d[0..$di]);
+        return 0 if -l "$outer_path/$inner_path_prefix";
+    }
+    # looks ok
+    return 1;
+}
+
+sub system_or_die {
+    my @cmd = @_;
+    
+    system(@cmd);
+    if($?) {
+        die "[FAILED] @cmd\n";
+    } else {
+        return $?;
+    }
+}

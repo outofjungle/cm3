@@ -1,0 +1,24 @@
+#!/usr/local/bin/perl -w
+
+# letters sanity-check: look for a non-zero-length file that has lines containing only letters
+
+use strict;
+use warnings;
+require "lib/Chisel/SanityCheck.pm";
+import Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ MAIN /],
+    max   => [qw/ MAIN /],
+);
+
+my $contents = read_file( filename => $files{MAIN} );
+
+die if ! length $contents;
+die if $contents =~ /[^a-zA-Z\s]/;
+
+# looks ok
+exit 0;

@@ -1,0 +1,68 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use warnings;
+use strict;
+use POSIX;
+use Log::Log4perl;
+use YAML::XS ();
+use Chisel::Pusher;
+use Getopt::Long;
+use Socket;
+
+die "doozer-push should not be run as root.\n" if $< == 0;
+
+my %opt;
+die "Usage: doozer push [--loop]\n" unless GetOptions( \%opt, "loop" );
+
+my $port = 49151;
+my $proto = getprotobyname('tcp');
+socket(Server, PF_INET, SOCK_STREAM, $proto)        || exit 0;
+bind(Server, sockaddr_in($port, INADDR_ANY))        || die "instance already running!";
+
+my $opt = YAML::XS::LoadFile( "/conf/pusher.conf" )
+  or die "Could not load configuration file: $!";
+
+my $pushtar   = "$opt->{var}/checkout/checkout.tar";
+
+# Set up Log::Log4perl
+Log::Log4perl->init( \ $opt->{log4perl} );
+my $root_logger = Log::Log4perl->get_logger( "" );
+$root_logger->info( "doozer push starting" );
+
+if( $opt->{disable} ) {
+    $root_logger->info( "doozer push disabled" );
+    exit 0;
+}
+
+eval {
+    my $pusher = Chisel::Pusher->new(
+        role          => $opt->{role},
+        pushtar       => $pushtar,
+        statusfile    => "$opt->{var}/status/pushstat",
+        push_throttle => $opt->{throttle},
+        maxflight     => $opt->{maxflight},
+        dropbox       => $opt->{dropbox},
+    );
+
+    # normally runs once, can loop if asked
+    $pusher->run( once => !$opt{loop} );
+
+    1;
+} or do {
+    $root_logger->fatal( "$@" );
+    exit 1;
+};
+
+$root_logger->info( "doozer push done" );
+
+exit 0;

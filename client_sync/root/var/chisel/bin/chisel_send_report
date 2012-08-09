@@ -1,0 +1,167 @@
+#!/usr/bin/perl -wT
+
+# This script is called by client and client_sync to log
+# reports to a local JSON file. It periodically sends the reports
+# upstream to the transport.
+
+use strict;
+use warnings;
+
+# set PATH, PERL5LIB to things that will work in our environment
+BEGIN {
+    $ENV{'PATH'} = '/var/chisel/bin:/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin';
+    $ENV{'PERL5LIB'} = '/var/chisle/lib/perl5/site_perl';
+    $ENV{'CURL_CA_BUNDLE'} = $ENV{'ZSYNC_CA_BUNDLE'} = '/share/cacerts/ca.crt';
+    unshift @INC, '/lib/perl5/site_perl';
+}
+
+use Fcntl qw/:DEFAULT :flock/;
+use Getopt::Long qw/:config require_order gnu_compat/;
+use JSON::PP;
+use Sys::Hostname;
+
+my %opt;
+usage() unless GetOptions( \%opt, "r|report=s%" );
+
+my $now = time;
+my $hold = 300;
+my $url = qx[/bin/chisel_get_transport --which-http];
+if( !$? && $url =~ m{^(https?://[\w\-\.:/]+)$} ) {
+    $url = $1;
+} else {
+    die "Call to chisel_get_transport failed!\n";
+}
+
+# Determine if we want to use a --interface option to curl
+my $want_interface = qx[chisel_get_transport --which-interface];
+if( $? == 0 && $want_interface =~ m{^([\w\:\.\-]+)$} ) {
+    # Command succeeded
+    $want_interface = $1;
+} else {
+    # Continue without preferring an interface
+    $want_interface = undef;
+}
+
+my $report_url  = "$url/report";
+my $report_file = '/var/chisel/var/reports';
+
+# make sure our report is sane; untaint data
+my %optr = %{ $opt{'r'} };
+foreach my $item ( qw/script code runtime version/ ) {
+    if( $optr{$item} =~ /^([a-zA-Z0-9\-\_\:\.]{0,255})$/ ) {
+        $optr{$item} = $1;
+    } else {
+        die "Bad report: $item=$optr{$item}.";
+    }
+}
+
+# if the file is over 100KB, something is wrong so don't waste
+# resources trying to parse it.
+my @file_stat = stat( $report_file );
+if( @file_stat and $file_stat[7] > 100000 ) {
+    warn "$report_file is too large (" . $file_stat[7] . " KB), deleting.";
+    my $num_deleted = unlink $report_file;
+    die "Couldn't delete $report_file." unless $num_deleted == 1;
+}
+
+my $json = JSON::PP->new();
+$json->canonical( 1 );
+die "Failed to create JSON parser" unless( $json and $json->get_canonical );
+
+sysopen( my $fh, $report_file, O_RDWR | O_CREAT )
+  or die "sysopen: $!";
+flock( $fh, LOCK_EX )
+  or die "flock: $!";
+seek( $fh, 0, 0 )
+  or do {
+    flock( $fh, LOCK_UN );
+    close( $fh );
+    die "Unable to seek on $report_file.";
+  };
+
+my $report = {};
+if( -s $fh ) {
+    my $report_raw = do { local $/; <$fh>; };
+    eval { $report = $json->decode( $report_raw ); };
+    if( $@ ) {
+        warn "Unable to parse $report_file, overwriting.";
+    }
+}
+
+# do the actual modification
+$report->{ $optr{'script'} } = [ $optr{'code'}, $optr{'runtime'}, $optr{'version'} ];
+
+# make sure metadata (hostname, package versions) is set
+# properly. Let Sys::Hostname->hostname() croak on error
+my $hostname = Sys::Hostname->hostname();
+if( exists $report->{'meta'}{'hostname'} and $hostname ne $report->{'meta'}{'hostname'} ) {
+    warn sprintf( "hostname changing from %s to %s", $report->{'meta'}{'hostname'}, $hostname );
+}
+$report->{'meta'}{'hostname'} = $hostname;
+
+# package versions
+foreach my $k ( qw/chisel_client chisel_client_sync/ ) {
+    chomp( my $v = qx[/var/chisel/bin/$k --version 2>/dev/null] );
+    $report->{'meta'}{$k} = $v ? $v : "<1.5";
+}
+
+# encode and write so data from this report is available if we send.
+eval {
+    my $report_raw = $json->encode( $report );
+    seek( $fh, 0, 0 );
+    truncate( $fh, 0 );
+    print $fh $report_raw;
+} or do {
+    warn "Unable to encode and write to $report_file: $@";
+};
+
+# send reports if there isn't any record of having sent them, if
+# we're running under --now, or if it's been $hold seconds since
+# we last tried sending them.
+my $send =
+     !( exists $report->{'meta'}{'sent'} )
+  || $opt{'now'}
+  || ( ( $now - $hold ) > $report->{'meta'}{'sent'} );
+
+my $fail = 1;
+if( $send ) {
+    # update "sent" time so we don't make too many requests
+    $report->{'meta'}{'sent'} = $now;
+
+    # send json upstream
+    my $cmd = sprintf(
+        'curl -f -s -S --max-time 5 %s -H "Content-Type: application/json" --data @%s %s',
+        ( $want_interface ? "--interface \Q$want_interface\E" : "" ),
+        $report_file, $report_url
+    );
+    my $ret = qx[$cmd];
+    if( $? ) {
+        warn "Report NOT sent to $report_url [error running: $cmd]\n";
+    } else {
+        print "Report sent to $report_url\n";
+
+        # remove script sections of the json, now that we know we sent them up
+        %$report = ( 'meta' => $report->{'meta'} );
+
+        $fail = 0;
+    }
+}
+
+# replace reports with metadata now that we've successfully sent
+unless ($fail) {
+    eval {
+        my $report_raw = $json->encode( $report );
+        seek( $fh, 0, 0 );
+        truncate( $fh, 0 );
+        print $fh $report_raw;
+    } or do {
+        warn "Unable to encode and write to $report_file: $@";
+    };
+    flock( $fh, LOCK_UN );
+    close $fh;
+}
+
+sub usage {
+    warn "usage: chisel_send_report --report key=value\n";
+    exit 1;
+}

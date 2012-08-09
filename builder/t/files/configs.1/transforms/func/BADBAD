@@ -1,0 +1,6 @@
+motd:
+    - append qux motd
+    
+    # will be broken
+    # this also helps test the code for missing raw files
+    - include nonexistent

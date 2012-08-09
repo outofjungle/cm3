@@ -1,0 +1,279 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+=pod
+
+azsync is the client. It expects a
+setup on the server in the form provided by azsync-builddir
+
+Quick steps:
+
+ mkdir foo
+ echo somedata > foo/bar
+ cd foo
+ generate_manifest -o azsync.manifest.json -d .
+ # edit out azsync.manifest.json ##FIXME
+ azsync-mkdir -m azsync.manifest.json
+ # now place foo up on some httpd
+ azsync --from http://url/to/foo --to localdir
+
+The manifest must refer to relative paths with no . or ..
+
+It will zsync the manifest, then iterate the manifest to
+discover remaining files relative to the manifest's base url.
+
+Logic should be the same as arsync, with a cp -Rl and
+version directory management, as well as external validation.
+
+=cut
+
+use warnings;
+use strict;
+
+use Getopt::Long;
+use File::Path;
+
+
+my %defaults = (
+             'cpargs'     => [ '-Rl' ],
+               );
+my %opt   = (
+             'h|help'   => 'Print this message',
+             'from=s'   => 'Url to sync from, eg http://host/dir/',
+             'to=s'     => 'Directory to sync to',
+             'clean=s'  => 'Remove all orphans (does not rsync)', # FIXME
+             'md5-verify'    => 'Require /to/azsync.manifest.json to be verified against md5 key',
+             'sha1-verify'    => 'Require /to/azsync.manifest.json to be verified against sha1 key', # not implemented
+             'crc32-verify'    => 'Require /to/azsync.manifest.json to be verified against crc32 key', # not implemented
+             'external-verify=s@' => 'External verification',
+             'noaction'  => 'Take no action, only print plan',
+             'rzsync=s' => 'specify alternate path to recursive-zsync',
+             'curl'   => 'Use curl instead of LWP to fetch Manifest. Searches PATH for curl binary',
+             'cpargs=s@' => "Args for cp (on bsd4 you probably want -Rp instead of -Rl)",
+             'sslcert=s' => "Client certificate file (SSL)",
+             'sslkey=s' => "Private key file name (SSL)",
+             'interface=s' => "Attempt to use this interface name, IP address or host name as the source of http connections",
+             'request-timeout=i' => "Timeout for each http request made",
+            );
+
+my %o;
+die "bad options" unless GetOptions( \%o, keys %opt );
+
+# set any defaults in options hash that aren't set
+for my $k (keys %defaults) {
+    $o{$k} ||= $defaults{$k}
+}
+
+die "need --from url" unless $o{from};
+die "need --to directory" unless $o{to};
+
+### FIXME CLEAN
+die "--clean replaces --to, pick only one" if $o{clean} and $o{to}; # FIXME
+$o{to} = $o{clean} if $o{clean};
+### END FIXME
+
+my $to = $o{to};
+my $from = $o{from};
+my $noact = $o{noaction};
+my $rzsync = $o{rzsync};
+my $cpargs = $o{cpargs};
+$rzsync ||= "/bin/recursive-zsync";
+
+my @rzsync_opts;
+push @rzsync_opts, "--curl" if $o{'curl'};
+push @rzsync_opts, "--sslcert",         $o{'sslcert'}         if $o{'sslcert'};
+push @rzsync_opts, "--sslkey",          $o{'sslkey'}          if $o{'sslkey'};
+push @rzsync_opts, "--interface",       $o{'interface'}       if $o{'interface'};
+push @rzsync_opts, "--request-timeout", $o{'request-timeout'} if $o{'request-timeout'};
+
+print "[Not taking any action, only printing plan]\n" if $noact;
+
+# If to/current exists but isn't a symlink (is a file, is a
+#   regular directory), clean it up.
+if (-e "$to/current" && !-l "$to/current") {
+    warn "$to/current exists but is not a symlink, deleting\n";
+    rmtree("$to/current") unless($noact);
+}
+
+# If to/previous exists but isn't a symlink (is a file, is a
+#   regular directory), clean it up.
+if (-e "$to/previous" && !-l "$to/previous") {
+    warn "$to/previous exists but is not a symlink, deleting\n";
+    rmtree("$to/previous") unless($noact);
+}
+
+# Figure out where the current and previous symlinks are pointing.
+my $current  = readlink "$to/current";
+my $previous = readlink "$to/previous";
+
+# If the current symlink exists and tries to link outside the
+#   working directory, clean it up.
+if (defined($current) && $current =~ /\//) {
+    warn "$to/current links to something with a slash, deleting\n";
+    unlink "$to/current" unless($noact);
+    $current = undef;
+}
+
+# If the previous symlink exists and tries to link outside the
+#   working directory, clean it up.
+if (defined($previous) && $previous =~ /\//) {
+    warn "$to/previous links to something with a slash, deleting\n";
+    unlink "$to/previous" unless($noact);
+    $previous = undef;
+}
+
+# If the current symlink exists but points to something that
+#   doesn't exist, clean it up.
+if (defined($current) && !stat("$to/$current")) {
+    warn "$to/current is a dangling symlink, deleting\n";
+    unlink "$to/current" unless($noact);
+    $current = undef;
+}
+
+# If the previous symlink exists but points to something that
+#   doesn't exist, clean it up.
+if (defined($previous) && !stat("$to/$previous")) {
+    warn "$to/previous is a dangling symlink, deleting\n";
+    unlink "$to/previous" unless($noact);
+    $previous = undef;
+}
+# If the previous symlink exists but the current symlink doesn't,
+#   clean up the previous symlink.
+if (defined($previous) && !defined($current)) {
+    warn "$to/previous exists but not $to/current, deleting\n";
+    unlink "$to/previous" unless($noact);
+    $previous = undef;
+}
+
+# If they asked for cleaning, we'll go through and delete directories
+#   that aren't pointed to by either the current or previous symlinks.
+if ($o{clean}) {
+    # Read in the contents of the directory
+    opendir(DIR, $o{clean});
+    my @files = readdir(DIR);
+    closedir(DIR);
+
+    foreach my $sub (@files) {
+        # skip dotfiles
+        next if ($sub =~ /^\./);
+        # Skip if the current symlink points to this
+        next if (defined $current && $sub eq $current);
+        # Skip if the previous symlink points to this
+        next if (defined $previous && $sub eq $previous);
+        # Skip if it's not a directory
+        next unless (-d "$to/$sub");
+        # Skip if it's a symlink (-d on a symlink to a dir
+        #   returns true)
+        next if (-l "$to/$sub");
+        # Only auto-nuke our specially formed rysnc directories
+        next unless $sub =~ /^sync.[\d\.]+$/;
+        # Nuke it if we got to here.
+        print "CLEAN: $to/$sub\n";
+        rmtree("$to/$sub") unless($noact);
+    }
+    exit 0;
+}
+
+# Make a new directory name
+my $newcurrent = "sync.$$." . time;
+die "$newcurrent already exists, what a horrible coincidence\n"
+  if (-e "$to/$newcurrent");
+
+# Lists of commands to execute that we will populate
+my @copy    = ();
+my @setlive = ();
+my @verify  = ();
+
+# If we bomb out, nuke our new directory.
+my @abort   = ['rm', '-rf', "$to/$newcurrent"];
+
+# If they asked for verification, add a verify step.
+if ($o{'md5-verify'}) {
+#    @verify = (['verify-md5sum', "$to/$newcurrent"]); FIXME
+}
+
+# if they asked for external verification, add that
+# note this invokes a shell
+if ($o{'external-verify'}) {
+    for my $vrfycmd (@{$o{'external-verify'}}) {
+        push @verify, ["sh", "-c", "$vrfycmd $to/$newcurrent" ];
+    }
+}
+
+# If we have both current and previous symlinks, we'll hardlink files
+#   in current to the new directory, then rsync to the new directory,
+#   then to set live we set current to the new current, move previous
+#   to the previous current, and nuke the old previous.
+if (defined($current) and defined($previous)) {
+    @copy = (['cp', @$cpargs, "$to/$current", "$to/$newcurrent"],
+              [$rzsync, @rzsync_opts, "--from", $from, "--to", "$to/$newcurrent"]);
+             #replace
+    @setlive = (['ln', '-sfn', $newcurrent, "$to/current"],
+                ['ln', '-sfn', $current, "$to/previous"],
+                ['rm', '-rf', "$to/$previous"]);
+}
+
+# If we have only a current symlink, we'll hardlink files in current
+#   to the new directory, then rsync to the new directory, then to set
+#   live we set current to the new current, and make previous point
+#   to the previous current.
+elsif (defined($current)) {
+    @copy = (['cp', @$cpargs, "$to/$current", "$to/$newcurrent"],
+             [$rzsync, @rzsync_opts, "--from", $from, "--to", "$to/$newcurrent"]);
+             # replace with call to recursive_zsync_fetch
+    @setlive = (['ln', '-sfn', $newcurrent, "$to/current"],
+                ['ln', '-sfn', $current, "$to/previous"]);
+}
+
+# If we have neither a current nor a previous, we'll create the new
+#   directory, then rsync to it, and set live by setting current to
+#   point to the new directory.
+else {
+    @copy = (['mkdir', '-p', $to],
+             [$rzsync, @rzsync_opts, "--from", $from, "--to", "$to/$newcurrent"]);
+    @setlive = (['ln', '-sfn', $newcurrent, "$to/current"]);
+}
+
+# If we were asked to not actually do anything, just print out
+#   the commands we would have run, and exit.
+if ($noact) {
+    local $" = "' '"; # attempt at showing quoting of args
+    print "RUN: ['@$_']\n" for (@copy, @verify, @setlive);
+    exit 0;
+}
+else {
+    # Do the copy commands, then any verification that was requested.
+    #   If we run into problems, run the abort commands and exit.
+    foreach my $cmd (@copy, @verify) {
+        print "RUN: [@$cmd]\n";
+        system(@$cmd);
+        my $out = $?;
+        if ($out) {
+            foreach my $cmd2 (@abort) {
+                print "ABORT: [@$cmd2]\n";
+                system(@$cmd2);
+            }
+            die "atomic rsync failed: @$cmd exited " . ($out>>8) . "\n";
+        }
+    }
+    # Do the commands needed to set the new copy live. If we run into
+    #   problems, run the abort commands.
+    foreach my $cmd (@setlive) {
+        print "RUN: [@$cmd]\n";
+        system(@$cmd);
+        my $out = $? >> 8;
+        if ($out) {
+            warn "atomic rsync setlive failed: @$cmd exited " . ($out>>8) . "\n";
+        }
+    }
+}
+

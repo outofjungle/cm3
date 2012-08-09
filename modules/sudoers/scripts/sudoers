@@ -1,0 +1,18 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+install_file(
+    from     => $file,
+    to       => "/etc/sudoers",
+    mode     => 0440,
+    pretest  => "visudo -cf {}",
+);
+
+Scripts::chmod_file 0440, "/etc/sudoers";
+Scripts::chown_file 0, 0, "/etc/sudoers";

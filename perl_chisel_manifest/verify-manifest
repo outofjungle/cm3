@@ -1,0 +1,37 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+
+use warnings;
+use strict;
+
+use Getopt::Long;
+
+use Chisel::Manifest;
+
+our %opt   = (
+              'h|help'   => 'Print this message',
+              'd|directory=s' => 'directory to chdir to when running the manifest check',
+              'f|file=s' => 'the manifest file',
+             );
+
+die "RTFS, bad usage" unless GetOptions(\our %o, keys %opt);
+
+die 'need manifest file' unless $o{f};
+
+$o{d} ||= ".";
+
+my $m = new Chisel::Manifest;
+$m->load_manifest($o{f});
+
+$m->validate;
+
+exit 0;

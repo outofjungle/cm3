@@ -1,0 +1,78 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer build-pack:
+#   stdin: storable map like
+#       {
+#           "repo" => "REPO file",
+#           "version" => "VERSION file",
+#           "targets" => [
+#               { "hosts" => [ h1, h2, ... ], "files" => [ { name => "name1", blob => "blob1" }, ... ] },
+#           ]
+#       }
+#   stdout: storable array that matches "targets" from input (index by index), like
+#       [
+#           { ok => 1, bucket => "treesha" },
+#           { ok => 0, message => "error msg"},
+#       ]
+
+use strict;
+
+use Digest::MD5 ();
+use Log::Log4perl qw/:easy/;
+use Storable ();
+
+use Chisel::Builder::Engine;
+use Regexp::Chisel qw/:all/;
+
+my $engine = Chisel::Builder::Engine->new( application => 'builder' );
+$engine->setup;
+
+# print a nice message
+INFO "doozer build-pack starting";
+
+eval {
+    # Read input from STDIN
+    my $stdin_text = do { local $/; <STDIN>; };
+    my $stdin = Storable::thaw( $stdin_text );
+
+    # Done with text from STDIN
+    undef $stdin_text;
+
+    INFO "Processing " . scalar( @{ $stdin->{'targets'} } ) . " targets from stdin";
+
+    # Create a packer
+    my $packer = $engine->new_packer;
+
+    # Run the packer
+    my $pack_result = $packer->pack(
+        repo    => $stdin->{'repo'},
+        version => $stdin->{'version'},
+        targets => $stdin->{'targets'},
+    );
+
+    # Done with $stdin object
+    undef $stdin;
+
+    # Dump results to STDOUT
+    print Storable::nfreeze( $pack_result );
+
+    1;
+} or do {
+    FATAL "$@";
+    INFO "doozer build-pack stopping (dead)";
+    exit 1;
+};
+
+INFO "doozer build-pack stopping";
+
+exit 0;

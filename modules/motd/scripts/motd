@@ -1,0 +1,11 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+install_file(template => 1,
+             from => $file,
+             to => "/etc/motd");

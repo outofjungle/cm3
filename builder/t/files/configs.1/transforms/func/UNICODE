@@ -1,0 +1,18 @@
+motd:
+    - [ replace, "hello world", "你好世界" ]
+    - [ replace, "你好世界", "שלום העולם" ]
+
+    # contains: SMILE ☹ :( T_T
+    # i.e. three frowns
+    - include unicode
+
+    - [ replacere,  "☹",   ":)"     ]
+    - [ replace,    ':(',  "\u263b" ] # black smiling face
+    - [ replacere,  'T_T', "\u263a" ] # white smiling face
+
+homedir:
+    - - append
+      - |
+        johndoe:
+            - ♥
+    - addkey johndoe ❦

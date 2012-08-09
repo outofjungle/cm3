@@ -1,0 +1,25 @@
+#!/usr/bin/perl -w
+
+use warnings;
+use strict;
+use Fcntl ':flock';
+
+my $lockfile = shift @ARGV;
+$lockfile ||= "/tmp/svscanboot_lockfile";
+# allow this filehandle to persist across exec
+$^F=9999;
+
+open FH, ">$lockfile"
+    or die "can't lock '$lockfile': $!\n";
+
+my $locked = flock(FH, LOCK_EX|LOCK_NB);
+
+if ($locked) {
+    # We obtained the lock, filehandle will stay open
+    # until this exec'd process exits
+    # always pgrphack, why not?
+    exec "/bin/pgrphack", "/bin/svscanboot.sh";
+} else {
+    # we could not lock, so exit
+    die "Scanboot already found... Exiting\n";
+}

@@ -1,0 +1,39 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+my %files = args()
+  or die;
+
+# linux-only module
+exit 0 unless $^O eq 'linux';
+
+# figure out how to restart autofs
+my $cmd = restart_cmd( service => "autofs" )
+  or die "can't figure out how to restart autofs";
+
+my @auto_master;
+my @map;
+my @mount_files;
+
+if( $files{'auto.master'} ) {
+    @auto_master = split "\n", read_file( filename => $files{'auto.master'} );
+} 
+
+foreach my $mount (@auto_master) {
+    $mount =~ m{/etc/(auto\.\w+)};
+    my $autofs_file = $1;
+    install_file(
+        from => $files{$autofs_file},
+        to   => "/etc/$autofs_file",
+        cmd  => $cmd,
+        );
+}
+
+install_file(
+    from => $files{'auto.master'},
+    to   => '/etc/auto.master',
+    cmd  => $cmd,
+);
+

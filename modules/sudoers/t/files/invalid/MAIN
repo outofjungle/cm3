@@ -1,0 +1,3 @@
+Defaults    !set_logname,!tty_tickets,syslog=auth
+invalid line
+root        ALL=(ALL) ALL

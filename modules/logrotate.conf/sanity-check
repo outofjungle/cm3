@@ -1,0 +1,17 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ MAIN /],
+    max   => [qw/ MAIN /],
+);
+
+# TODO
+
+exit 0;

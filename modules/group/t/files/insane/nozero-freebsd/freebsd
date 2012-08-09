@@ -1,0 +1,4 @@
+daemon:*:1:daemon
+kmem:*:2:root
+operator:*:5:root
+empty:*:100:

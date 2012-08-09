@@ -1,0 +1,23 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+# linux-only module
+exit 0 unless $^O eq 'linux';
+
+# rhel 4/5: /etc/sysconfig/snmpd.options
+# rhel 6: /etc/sysconfig/snmpd
+my $rr = get_redhat_release();
+my $to = $rr < 6 ? "/etc/sysconfig/snmpd.options" : "/etc/sysconfig/snmpd";
+
+# need to restart snmpd after installing
+my $cmd = restart_cmd( service => "snmpd" )
+  or die "can't figure out how to restart snmpd";
+
+install_file(from => $file,
+             to => $to,
+             cmd => $cmd);

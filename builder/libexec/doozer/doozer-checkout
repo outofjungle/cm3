@@ -1,0 +1,259 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer checkout:
+#   - fetch configs from svn
+#   - fetch overlays 
+#   - scan transforms and tags
+#   - scan raw files, fetch virtual raw files such as usergroups
+#   - scan grouping sources like cmdb site/property, rolesdb role
+
+use strict;
+use warnings;
+
+use AnyEvent;
+use AnyEvent::Util;
+use Getopt::Long;
+use Log::Log4perl qw/:easy/;
+use YAML::XS ();
+
+use Chisel::Builder::Engine;
+use Chisel::CheckoutPack;
+use Regexp::Chisel qw/:all/;
+
+my $engine = Chisel::Builder::Engine->new( application => "doozer-checkout" );
+$engine->setup;
+
+# command line options
+my %getopt;
+GetOptions(
+    \%getopt,
+    "force-passwd",    # bypass passwd source of truth sanity checks
+) or die "usage: doozer checkout [--force-passwd]\n";
+
+# lock because there is only one 'indir' and we can't have two processes touching it at once
+my $lockfd = $engine->lock('checkout');
+
+main();
+
+die "main() did not exit!";
+
+sub main {
+    # print a nice message
+    INFO "doozer checkout starting";
+
+    # start the clock
+    $engine->metrics->timer_start( {}, 't_checkout' );
+
+    eval {
+        # handle to our output pack and staging directory
+        my $outdir = $engine->config( "var" ) . "/checkout";
+        my $cp = Chisel::CheckoutPack->new( filename => "$outdir/checkout.tar" );
+        my $cpe = $cp->extract;
+
+        # get transforms, tags, raw files
+        # XXX hardcoded the ex-raws we know matter... definitely a better way to do this
+        # XXX but I didn't want to just dump all raws from the old tarball since it's unnecessary
+        my $ex_raws =
+          [ grep { defined $_ } map { $cpe->raw( $_ ) } qw! keykeeper/homedir internal/hostlist/dump ! ];
+
+        my $cv = AnyEvent->condvar;
+        my $err;
+
+        my ( $hostnames, $transforms, $tags, $raws, $host_transforms );
+
+        do_setup();
+        ( $transforms, $tags ) = do_checkout_transforms_and_tags($ex_raws);
+
+        # various last-ditch safeguards on $transforms, $tags
+        if( @$transforms < 500 ) {
+            LOGDIE "SAFEGUARD TRIPPED: Not enough transforms checked out!\n";
+        } elsif( @$tags < 10 ) {
+            LOGDIE "SAFEGUARD TRIPPED: Not enough tags checked out!\n";
+        } elsif( 1 != grep { $_->name eq 'DEFAULT' } @$transforms ) {
+            LOGDIE "SAFEGUARD TRIPPED: No DEFAULT transform checked out!\n";
+        } elsif( 1 != grep { $_->name eq 'DEFAULT_TAIL' } @$transforms ) {
+            LOGDIE "SAFEGUARD TRIPPED: No DEFAULT_TAIL transform checked out!\n";
+        }
+
+        $cv->begin;
+        fork_call { return do_checkout_raws( $ex_raws ); } sub {
+            if( !@_ ) {
+                $err = "do_checkout_raws: " . ($@ || $!);
+                ERROR $err;
+            } else {
+                ( $raws ) = @_;
+            }
+
+            $cv->end;
+        };
+
+        $cv->begin;
+        fork_call { return do_checkout_hostlist( $ex_raws ); } sub {
+            if( !@_ ) {
+                $err = "do_checkout_hostlist: " . ($@ || $!);
+                ERROR $err;
+            } else {
+                ( $hostnames ) = @_;
+
+                $cv->begin;
+                fork_call { return do_walrus( $hostnames, $transforms, $tags ); } sub {
+                    if( !@_ ) {
+                        $err = "do_walrus: " . ($@ || $!);
+                        ERROR $err;
+                    } else {
+                        ( $host_transforms ) = @_;
+                    }
+                    $cv->end;
+                };
+            }
+            $cv->end;
+        };
+
+        $cv->recv;
+
+        if( $err ) {
+            die $err;
+        }
+
+        # update push contents in stagedir/ and re-write checkout.tar
+        $cpe->smash( host_transforms => $host_transforms, raws => $raws );
+        $cp->write_from_fs( $cpe->stagedir );
+
+        # write to metrics file
+        my $metricsfile = $engine->config("var") . "/status/metrics-checkout";
+        open my $fh, ">", "$metricsfile.$$"
+          or die "can't open metrics-checkout.$$: $!\n";
+        print $fh "# this file intentionally left blank\n{}\n";
+        close $fh;
+        rename "$metricsfile.$$" => $metricsfile
+          or die "can't replace $metricsfile: $!\n";
+
+        1;
+    };
+
+    my $fail = $@;
+
+    # stop the clock
+    $engine->metrics->timer_stop( {}, 't_checkout' );
+
+    if ($fail) {
+        FATAL "$fail";
+        INFO "doozer checkout stopping (dead)";
+        $engine->metrics->fail( {}, $fail );
+        exit 1;
+    } else {
+        $engine->metrics->ok( {} );
+    }
+
+    INFO "doozer checkout stopping";
+    
+    exit 0;
+}
+
+sub do_setup {
+    # create an Actuate obj
+    my $actuator = $engine->new_actuate();
+
+    # Check out configuration repository
+    my $svn_rev = $actuator->svn_checkout();
+
+
+    
+    
+
+    return 1;
+}
+
+sub do_checkout_hostlist {
+    my ( $ex_raws ) = @_;
+
+    # create a Checkout obj
+    my $checkout = $engine->new_checkout( ex_raws => $ex_raws, );
+
+    # figure out master host list
+    my $hostnames_txt = $checkout->raw( 'internal/hostlist/dump' )->data;
+    my @hostnames = split /\n/, $hostnames_txt;
+
+    return \@hostnames;
+}
+
+sub do_checkout_transforms_and_tags {
+    my ( $ex_raws ) = @_;
+
+    # create a Checkout obj
+    my $checkout = $engine->new_checkout( ex_raws => $ex_raws, );
+
+    # extract transforms, tags, and raw files
+    my @transforms = $checkout->transforms;
+    my @tags       = $checkout->tags;
+
+    return ( \@transforms, \@tags );
+}
+
+sub do_checkout_raws {
+    my ( $ex_raws ) = @_;
+
+    # create a Checkout obj
+    my $checkout = $engine->new_checkout( ex_raws => $ex_raws, );
+
+    # extract raw files
+    # XXX - still needs to get transforms, so this is done twice
+    # XXX - once in do_checkout_transforms_and_tags and once here
+    my @raw = $checkout->raw;
+
+    return \@raw;
+}
+
+sub do_walrus {
+    my ( $hostnames, $transforms, $tags ) = @_;
+
+    # because we'll need to serialize them later, and the walrus doesn't need them loaded
+    $_->unload for @$transforms;
+
+    # figure out what groups to require (safety measure against role inconsistencies)
+    my @require_group;
+    my $roles_result = $engine->roles->tag( $engine->config( 'range_tag' ), 'roles' )->{'roles'};
+
+    foreach my $role_result ( @$roles_result ) {
+        my $rolename = $role_result->{'ns'} . '.' . $role_result->{'name'};
+        push @require_group, 'group_role/' . $rolename;
+    }
+
+    # instantiate a walrus object (will figure out hostname -> transform maps)
+    my $walrus = $engine->new_walrus(
+        transforms    => $transforms,
+        tags          => $tags,
+        require_group => \@require_group,
+    );
+
+    # use walrus to get a lookup table of hostname -> transforms
+    $walrus->add_host( host => $_ ) for @$hostnames;
+
+    my $json_xs = JSON::XS->new;
+    my %transformarray_lookup;
+    my %walrus_range_lookup;
+
+    foreach my $hostname ($walrus->range) {
+        my $transformarray = [ $walrus->host_transforms( host => $hostname ) ];
+        my $transformarray_id = join '//', @$transformarray;
+
+        if( $transformarray_id ) {
+            $transformarray_lookup{$transformarray_id} ||= $transformarray;
+            $walrus_range_lookup{$hostname} = $transformarray_lookup{$transformarray_id};
+        }
+    }
+
+    INFO "Done mapping hosts -> transforms";
+
+    return \%walrus_range_lookup;
+}

@@ -1,0 +1,161 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+use 5.010;
+
+use strict;
+use warnings;
+use Getopt::Long;
+use JSON::XS ();
+use List::MoreUtils qw/any/;
+use Log::Log4perl qw/:easy/;
+use YAML::XS ();
+
+use Chisel::Builder::Engine;
+
+my $USAGE = "usage: doozer cluster [--verbose] [--set key=value]\n";
+
+my %opt;
+die $USAGE unless GetOptions( \%opt, "v|verbose", "set=s%" );
+die $USAGE unless @ARGV == 0;
+
+# cluster configuration variables we'll consider getting/setting
+my @CLUSTER_CONFIG_VARS = ( 'pusher' );
+
+# become chiseldata if we started out as root
+if( $< == 0 ) {
+    exec( "/bin/setuidgid", "chiseldata", $0, @ARGV );
+    die "exec failed: $!\n";
+}
+
+my $engine = Chisel::Builder::Engine->new( log4perl_level => ( $opt{'v'} ? 'DEBUG' : 'WARN' ) );
+$engine->setup;
+
+# Get ZooKeeper worker handle using default worker name for this host
+# Doesn't really matter that this script isn't part of the worker system
+my $zk = $engine->new_zookeeper_worker;
+
+# If in --set mode, set the requested cluster variables and then exit
+if( $opt{'set'} ) {
+    for my $ckey ( keys %{ $opt{'set'} } ) {
+        if( grep { $_ eq $ckey } @CLUSTER_CONFIG_VARS ) {
+            $zk->config( $ckey => $opt{'set'}{$ckey} );
+        } else {
+            warn "[$ckey] is not a valid cluster setting\n";
+        }
+    }
+
+    exit 0;
+}
+
+# Get interesting cluster variables
+my %cluster_config = map { $_ => $zk->config( $_ ) } @CLUSTER_CONFIG_VARS;
+
+# Load host -> transform maps from checkout tarball
+my $host_transforms;
+
+if( $cluster_config{pusher} ) {
+    # Location of checkout tarball
+    my $checkout_tar = $engine->config( "var" ) . "/dropbox/checkout-$cluster_config{pusher}.tar";
+
+    if( -f $checkout_tar ) {
+        # Load host->transform map
+        # XXX should use CheckoutPack
+        my $host_transforms_txt = qx[tar -xOf \Q$checkout_tar\E ./hosts.idx];
+        if( $? ) {
+            die "tar -xOf $checkout_tar ./hosts.idx failed!";
+        }
+
+        $host_transforms = YAML::XS::Load( $host_transforms_txt );
+    }
+}
+
+# Store information on each worker
+my %worker_info;
+
+# Store global stats
+my %global_info;
+
+# Has X worker seen a bucket?
+# $seen_bucket{$bucket}{$worker} = 1
+my %seen_bucket;
+
+# Have we seen a host before?
+# Double duty: The value is also the list of workers that are advertising for this host
+my %adv_host;
+
+for my $worker ( sort $zk->get_workers ) {
+    # First- pull partition for this worker
+    my $part = [ $zk->get_part( $worker ) ];
+
+    for my $host ( @$part ) {
+        my $bucketstr =
+          ( $host_transforms && $host_transforms->{$host} )
+          ? JSON::XS::encode_json( $host_transforms->{$host} )
+          : $host;
+
+        if( !$adv_host{$host} ) {
+            $global_info{hosts}++;
+            $adv_host{$host} = [ $zk->get_workers_for_host( $host ) ];
+        }
+
+        $worker_info{$worker}{hosts}++;
+
+        if( !$seen_bucket{$bucketstr} ) {
+            $global_info{buckets}++;
+        }
+
+        if( !$seen_bucket{$bucketstr}{$worker} ) {
+            $worker_info{$worker}{buckets}++;
+            $seen_bucket{$bucketstr}{$worker} = 1;
+        }
+    }
+
+    # Second- check whether this worker is online
+    if( my $worker_session = $zk->registered( "w-$worker" ) ) {
+        $worker_info{$worker}{session} = $worker_session;
+    }
+}
+
+# Go back through host advertisements, and update online host count for each worker
+foreach my $host ( keys %adv_host ) {
+    foreach my $worker ( @{ $adv_host{$host} } ) {
+        if( $worker_info{$worker} ) {
+            $worker_info{$worker}{hosts_online}++;
+        }
+    }
+
+    if( $adv_host{$host} && any { $worker_info{$_} } @{ $adv_host{$host} } ) {
+        $global_info{hosts_online}++;
+    }
+}
+
+# Print output
+if( ! $host_transforms ) {
+    print "[WARNING]\n";
+    print "- cannot load checkout tarball; bucket counts will be inaccurate\n\n";
+}
+print "[workers]\n";
+printf "* %-50s %10s %15s %15s %s\n", "worker", "buckets", "hosts-assigned", "hosts-online", "session";
+foreach my $worker ( sort keys %worker_info ) {
+    printf "- %-50s %10s %15s %15s %s\n", $worker, $worker_info{$worker}{buckets} || 0, $worker_info{$worker}{hosts} || 0,
+      $worker_info{$worker}{hosts_online} || 0, $worker_info{$worker}{session} || '<offline>';
+}
+printf "* %-50s %10s %15s %15s -\n", "CLUSTER TOTAL", $global_info{buckets} || 0, $global_info{hosts} || 0,
+  $global_info{hosts_online} || 0;
+
+print "\n[configuration]\n";
+for my $ckey ( sort keys %cluster_config ) {
+    print "- $ckey: " . ( $cluster_config{$ckey} // '<null>' ) . "\n";
+}
+
+exit 0;

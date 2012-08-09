@@ -1,0 +1,8 @@
+install some_mod
+remove some_mod
+
+#comments are allowed
+alias some_mod
+
+options some_mod
+ alias some_mod

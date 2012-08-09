@@ -1,0 +1,26 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use AnyEvent;
+use Log::Log4perl qw/:easy/;
+use Chisel::Builder::Engine;
+use Chisel::Builder::Overmind;
+
+my $engine = Chisel::Builder::Engine->new( application => 'builder' );
+$engine->setup;
+
+my $lockfd = $engine->lock('build');
+
+my $overmind = Chisel::Builder::Overmind->new( engine_obj => $engine );
+my $cb = $overmind->run;

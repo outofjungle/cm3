@@ -1,0 +1,111 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+# doozer zkmaster:
+#   - read host -> transform mapping from checkout tarball
+#   - rebalance zookeeper cluster partitions
+
+use strict;
+
+use Getopt::Long;
+use JSON::XS ();
+use Log::Log4perl qw/:easy/;
+use YAML::XS ();
+
+use Chisel::Builder::Engine;
+use Regexp::Chisel qw/:all/;
+
+my $engine = Chisel::Builder::Engine->new( application => 'zkmaster' );
+$engine->setup;
+
+# figure out options (there's one, --loop, which makes us scan forever)
+my %opt;
+GetOptions( \%opt, "loop", "fresh" ) or die "usage: doozer zkmaster [--loop] [--fresh]\n";
+
+# print a nice message
+INFO "doozer zkmaster starting";
+
+# ZooKeeper handle
+my $zk = $engine->new_zookeeper_leader;
+
+# Location of checkout tarball
+# Checkout box we receive pushes from
+my $checkout_pusher;
+
+# Last mtime of the checkout tarball
+my $checkout_mtime = 0;
+
+do {    # this is part of a do ... while so we respect --loop
+
+    # sleep before loop iteration
+    sleep 5 if $opt{'loop'};
+
+    # Are we the current leader?
+    if( $zk->register( "leader" ) ) {
+        one_zkmaster();
+    } else {
+        DEBUG "Not currently cluster leader.";
+    }
+
+} while( $opt{'loop'} );
+
+INFO "doozer zkmaster stopping";
+
+exit 0;
+
+sub one_zkmaster {
+    # Have we changed which pusher we're listening to?
+    my $new_pusher = $zk->config( "pusher" );
+    if( !defined $new_pusher ) {
+        # Pusher is not currently configured
+        undef $checkout_pusher;
+        return;
+    } elsif( !defined $checkout_pusher or $checkout_pusher ne $new_pusher ) {
+        # Pusher configuration has been changed
+        $checkout_pusher = $new_pusher;
+        $checkout_mtime  = 0;
+    }
+
+    # Has the checkout tarball been updated recently?
+    my $checkout_tar  = $engine->config( "var" ) . "/dropbox/checkout-$checkout_pusher.tar";
+    my @checkout_stat = stat $checkout_tar;
+    if( @checkout_stat and ( !$checkout_mtime or $checkout_mtime != $checkout_stat[9] ) ) {
+        DEBUG "Checkout tarball updated (mtime = $checkout_stat[9])";
+        $checkout_mtime = $checkout_stat[9];
+
+        # Load host->transform map
+        # XXX should use CheckoutPack
+        my $host_transforms_txt = qx[tar -xOf \Q$checkout_tar\E ./hosts.idx];
+        if( $? ) {
+            die "tar -xOf $checkout_tar ./hosts.idx failed!";
+        }
+
+        my $host_transforms = YAML::XS::Load( $host_transforms_txt );
+
+        my $json_xs = JSON::XS->new;
+        my %transformarray_lookup;
+        my %rebalance_input;
+
+        foreach my $hostname ( keys %$host_transforms ) {
+            my $transformarray = [ sort @{ $host_transforms->{$hostname} } ];
+            my $transformarray_id = join '//', @$transformarray;
+
+            if( $transformarray_id ) {
+                $transformarray_lookup{$transformarray_id} ||= $json_xs->encode( $transformarray );
+                $rebalance_input{$hostname} = $transformarray_lookup{$transformarray_id};
+            }
+        }
+
+        # Update ZooKeeper
+        $zk->rebalance( \%rebalance_input, fresh => $opt{'fresh'} );
+    }
+}

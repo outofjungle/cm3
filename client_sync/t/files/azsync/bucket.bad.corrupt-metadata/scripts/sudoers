@@ -1,0 +1,18 @@
+#!/var/chisel/bin/perl -w
+
+use strict;
+use warnings;
+use Scripts qw/:all/;
+
+my $file = args()
+  or die;
+
+install_file(
+    from     => $file,
+    to       => "/etc/sudoers",
+    mode     => 0440,
+    pretest  => "visudo -cf {}",
+);
+
+chmod 0440, "/etc/sudoers";
+chown 0, 0, "/etc/sudoers";

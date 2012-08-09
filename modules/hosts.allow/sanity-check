@@ -1,0 +1,113 @@
+#!/usr/local/bin/perl -w
+
+
+use strict;
+use warnings;
+use NetAddr::IP;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ MAIN / ],
+    max   => [ qw/ MAIN / ],
+);
+
+my $exit = '0';
+
+my @file = split /\n/, read_file( filename => $files{MAIN} );
+
+my $found_allow_local;
+my $found_deny_all;
+my $nblocks = 0;
+
+# regex to match a hosts.allow line like
+# "ALL : 127.0.0.0/255.0.0.0 : allow" or "ALL : 127.0.0.0/255.0.0.0" or (ipv6-style) "ALL : [::ffff:127.0.0.0]/104 : allow"
+# capture vars will be ( netip, netmask|undef, deny|allow|undef )
+my $hosts_allow_re = qr{^                ALL                                               # daemon list, we're going to require it be ALL
+                               \s* : \s* ([\d\.]+|\[[A-Za-z\d\.:]+\]) (?: / ([\d\.]+) | )  # client list, we're going to require it be a CIDR or single address
+                          (?i: \s* : \s* (deny|allow) | )                                  # optional DENY or ALLOW
+                          \s*
+                        $}x;
+
+# one NetAddr::IP for each hosts.allow line
+my @blocks;
+
+foreach my $e (@file) {
+    # ignore comments and blank lines
+    next if $e =~ /^#/;
+    next if $e eq '';
+    
+    # look for ALL : ALL : deny
+    if( $e eq 'ALL : ALL : deny' ) {
+        $found_deny_all = 1;
+        next;
+    } elsif( $found_deny_all ) {
+        # it's not the last entry...
+        # keep processing so maybe we can find more errors
+        print STDERR "ERROR: 'ALL : ALL : deny' is not the final entry\n";
+        $exit = 1;
+    }
+    
+    # look for ALL : 127.0.0.1/255.0.0.0 : allow
+    if( $e eq 'ALL : 127.0.0.0/255.0.0.0 : allow' ) {
+        # don't 'next' since we want to run CIDR processing on this block as well
+        $found_allow_local = 1;
+    }
+
+    # bz4493466: allow rule for sendmail
+    if( $e eq 'sendmail : ALL : allow' ) {
+        next;
+    }
+    
+    # hosts.allow has a wild syntax, we're only going to allow a subset of it
+    if( $e =~ $hosts_allow_re ) {
+        my ( $ipnet, $mask ) = ( $1, $2 );
+        
+        # clean up for ipv6 addresses
+        $ipnet =~ s/^\[(.+)\]$/$1/;
+        
+        my $block = NetAddr::IP->new( $ipnet, $mask );
+        
+        unless(defined($block)) {
+            print STDERR "ERROR: $e is not a valid CIDR block\n";
+            $exit = '1';
+            next;
+        }
+        
+        if( my @outerblocks = grep { $block->within($_) } @blocks ) {
+            print STDERR "ERROR: $e is contained within @outerblocks\n";
+            $exit = '1';
+            next;
+        }
+        
+        # remember this block for later
+        push @blocks, $block;
+        
+        # only count ipv4 nets towards the block count sanity check
+        # just in case someone tries to submit a file with only ipv6 blocks
+        $nblocks++ if $block->version == 4;
+    } else {
+        print STDERR "ERROR: $e is unrecognizable\n";
+        $exit = '1';
+        next;
+    }
+}
+
+if( $nblocks < 6 ) {
+    print STDERR "ERROR: Not enough netblocks (only $nblocks are present)\n";
+    $exit = '1';
+}
+
+if( ! $found_deny_all ) {
+    print STDERR "ERROR: 'ALL : ALL : deny' was not found\n";
+    $exit = '1';
+}
+
+if( ! $found_allow_local ) {
+    print STDERR "ERROR: 'ALL : 127.0.0.0/255.0.0.0 : allow' was not found\n";
+    $exit = '1';
+}
+
+exit $exit;

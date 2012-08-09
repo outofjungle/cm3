@@ -1,0 +1,9 @@
+# Part of the Chisel hosts.allow test suite =====
+ALL : 127.0.0.0/255.0.0.0 : allow
+ALL : 63.88.179.0/255.255.255.0 : allow
+#
+# BEGINNING OF CUSTOMIZATION SECTION
+# DO NOT DELETE OR MODIFY THE NEXT LINE
+# hosts.allow.local will be inserted after this line
+# END OF CUSTOMIZATION SECTION
+ALL : ALL : deny

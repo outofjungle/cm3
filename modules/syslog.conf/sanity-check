@@ -1,0 +1,63 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ linux freebsd /],
+    max   => [qw/ linux freebsd /],
+);
+
+# check files
+foreach my $f (keys %files) {
+    ck( $f, $files{$f} ) > 2 or die "$f: not enough lines";
+}
+
+exit 0;
+
+sub ck {    # returns number of valid syslog lines (or dies if something is wrong)
+    my ( $name, $file ) = @_;
+
+    my $nlines;
+    my @lines = split "\n", read_file( filename => $file );
+    chomp @lines;
+
+    foreach my $e ( @lines ) {
+        next if $e =~ /^#/;       # skip comments
+        next if $e =~ /^\s*$/;    # skip lines with only whitespace
+
+        if( $name eq 'freebsd' && $e =~ /^[\!\+\-]./ ) {
+            # looks like a FreeBSD-style program or hostname specification
+            # skip to the next line, nothing more to examine here
+            next;
+        }
+
+        my ( $selector, $action ) = ( $e =~ /^\s*(\S+)[ \t]+(.+)?\s*$/ );
+
+        die "$name: no selector: $e\n" unless $selector;
+        die "$name: no action: $e\n"   unless $action;
+
+        # check selector format
+        my @selectors = split /;/, $selector;
+        foreach ( @selectors ) {
+            die "$name: bad selector $_"
+              unless /^
+               (
+                   (?:[\w,]+|\*)      # facility
+                   (?:,[\w,]+|\*)*    # more facilities
+                   \.
+                   (?:[\!\=\>\<]?\w+|\*)  # priority
+               )
+               $
+            /x
+        }
+
+        $nlines++;
+    }
+
+    return $nlines;
+}

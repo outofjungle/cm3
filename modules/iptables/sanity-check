@@ -1,0 +1,11 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args() or die;
+
+# TODO
+
+exit 0;

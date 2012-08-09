@@ -1,0 +1,6 @@
+#!/bin/sh
+
+export PATH=/var/chisel/bin:/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
+export PERL5LIB=/var/chisel/lib/perl5/site_perl
+
+exec /var/chisel/bin/chisel_client_sync 2>&1

@@ -1,0 +1,3 @@
+force .bash_history_test /dev/null
+.ssh/authorized_keys_test /dev/null
+.mysql_history_test /dev/null

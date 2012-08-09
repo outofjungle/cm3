@@ -1,0 +1,3 @@
+Defaults    !set_logname,!tty_tickets
+root        ALL=(ALL) ALL
+

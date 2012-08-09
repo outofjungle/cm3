@@ -1,0 +1,42 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::Builder::Engine;
+use Getopt::Long;
+use Log::Log4perl qw/:easy/;
+
+my $USAGE = "usage: doozer var <varname>\n";
+
+my %opt;
+die $USAGE unless GetOptions( \%opt );
+die $USAGE unless @ARGV == 1;
+
+# become chisel user if we started out as root
+if( $< == 0 ) {
+    exec( "/bin/setuidgid", "chisel", $0, @ARGV );
+    die "exec failed: $!\n";
+}
+
+my $engine = Chisel::Builder::Engine->new;
+$engine->setup;
+
+my $value = $engine->config($ARGV[0]);
+if( defined $value ) {
+    chomp $value;
+
+    print $value;
+    print "\n" if length $value; # don't add trailing newline if $value is zero-length
+}
+
+exit 0;

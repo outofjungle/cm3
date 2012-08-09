@@ -1,0 +1,33 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [qw/ MAIN /],
+    max   => [qw/ MAIN /],
+);
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+
+# maximum length is 2KB (no real reason for it to ever be larger)
+if( length $files{'MAIN'} > 2048 ) {
+    die "'service' file is too long\n";
+}
+
+# the file will look like:
+# snmpd on
+# sshd on
+# pushsshd off
+
+foreach my $line (@contents) {
+    if( $line !~ /^\s*(\w+)\s+(on|off)\s*$/ ) {
+        die "invalid 'service' file line: $line\n";
+    }
+}
+
+exit 0;

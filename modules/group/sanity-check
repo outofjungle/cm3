@@ -1,0 +1,80 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+use Regexp::Chisel qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ linux freebsd / ],
+    max   => [ qw/ linux freebsd / ],
+);
+
+# check files
+ck( $files{linux}, 'linux' ) > 2 or die "not enough linux groups";
+ck( $files{freebsd}, 'freebsd' ) > 2 or die "not enough freebsd groups";
+
+exit 0;
+
+sub ck { # returns number of valid group entries (or dies if something is wrong)
+    my ($file, $os) = @_;
+    
+    my %group_count;
+    my %names_seen;
+    my %gids_seen;
+    my $nlines = 0;
+    my $zero;
+    my @lines = split "\n", read_file( filename => $file );
+    chomp @lines;
+
+    foreach my $e (@lines) {
+        next if $e =~ /^#/;    # skip comments
+        my @ent = split /:/, $e, -1;    # group is colon delimited
+        
+        die "$file: wrong number of fields: $e\n" unless @ent == 4;
+        die "$file: missing name: $e\n"           unless $ent[0];
+        die "$file: bad name: $e\n"               unless $ent[0] =~ /^[a-zA-Z0-9\-\_]{0,30}$/;
+        die "$file: missing password: $e\n"       unless $ent[1];
+        die "$file: non-numeric GID: $e\n"        unless $ent[2] =~ /^\d+/;
+        
+        $zero = $ent[0] if $ent[2] eq '0';
+        
+        my @userlist = split /,/, $ent[3], -1;
+        for (@userlist) {
+            /^$RE_CHISEL_username\z/ or die "$file: bad user $_ in group $ent[0]\n";
+            $group_count{ $_ } ++; # used to check if over FreeBSD limit
+        }
+        
+        $names_seen{ $ent[0] } ++;
+        $gids_seen{ $ent[2] } ++;
+        $nlines ++;
+    }
+
+    if( $nlines != scalar keys %names_seen ) {
+        die "$file: duplicate group names found (names: " . join(" ", grep { $names_seen{$_} > 1 } keys %names_seen ) . ")\n";
+    }
+
+    if( $nlines != scalar keys %gids_seen ) {
+        die "$file: duplicate group gids found (gids: " . join(" ", grep { $gids_seen{$_} > 1 } keys %gids_seen ) . ")\n";
+    }
+    
+    if( $os eq 'freebsd' ) {
+        # additional check for freebsd
+        die "$file: missing 'wheel' group\n" unless exists $names_seen{'wheel'};
+        die "$file: missing 'operator' group\n" unless exists $names_seen{'operator'};
+        
+        my $die_msg = undef;
+        foreach my $user ( keys %group_count ) {
+            $die_msg .= "$user is over the FreeBSD group limit: ($group_count{$user}) groups\n" if $group_count{$user} > 15;
+        }
+        die $die_msg if($die_msg);
+    }
+    
+    # a group with GID zero must always exist
+    die "$file: no group with GID zero\n" unless $zero;
+    
+    return $nlines;
+}

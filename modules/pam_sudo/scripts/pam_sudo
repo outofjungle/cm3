@@ -1,0 +1,67 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Scripts qw/:all/;
+
+# determine which pam_sudo file to use
+# since it is os-dependent
+
+my $want_file;
+my $os = get_os();
+if( $os eq 'freebsd' ) {
+    my $os_ver = get_os_ver();
+    if( $os_ver =~ /^(6|7)\./ ) {
+        $want_file = "freebsd$1";
+    }
+} elsif( $os eq 'linux' ) {
+    my $os_ver = get_redhat_release();
+    if( $os_ver =~ /^(4|5|6)\./ ) {
+        $want_file = "rhel$1";
+    }
+}
+
+if( !$want_file ) {
+    die "sorry, this script does not work on your os";
+}
+
+# read the correct pam_sudo file
+my $file = args( file => $want_file )
+  or die "pam_sudo file $want_file missing from bucket";
+
+if( -z $file ) {
+    die "pam_sudo file $want_file is zero-length";
+}
+
+# read the OS-specific file
+my $contents = read_file( filename => $file );
+
+# we support a bonus macro to enable sudo via ssh-agent
+$contents =~ s/::sudo-ssh-agent::/sudo_ssh_agent_text()/eg;
+
+# install the file
+write_file(
+    contents => $contents,
+    filename => "/etc/pam.d/sudo",
+);
+
+exit 0;
+
+sub sudo_ssh_agent_text {
+
+    if( -e "/lib/security/pam_ssh_agent_auth.so" || -e "/lib64/security/pam_ssh_agent_auth.so" ) {
+        warn "pam_sudo: pam_ssh_agent_auth requested and is available\n" if $ENV{CHISEL_DEBUG};
+        return <<'EOT';
+
+# pam_ssh_agent_auth enabled by chisel
+auth sufficient pam_ssh_agent_auth.so file=/etc/security/pamkeys/%u
+
+EOT
+    } else {
+        warn "pam_sudo: pam_ssh_agent_auth requested but not available\n" if $ENV{CHISEL_DEBUG};
+        return <<'EOT';
+
+# pam_ssh_agent_auth requested but not available -- sorry!
+
+EOT
+    }
+}

@@ -1,0 +1,2 @@
+Defaults    !set_logname,!tty_tickets,syslog=auth
+root        ALL=(ALL) ALL

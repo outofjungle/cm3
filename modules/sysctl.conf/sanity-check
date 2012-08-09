@@ -1,0 +1,21 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args() or die;
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+if( ! @contents ) {
+    die "zero-length sysctl.conf file\n";
+}
+
+foreach (@contents) {
+    next if /^#/;
+    next if /^$/;
+    /^([\w|\.|\-]+)\s*=\s*([\|\/\w\-\%\~]*)/;
+    die "Error: wrong input data" if ! ( defined($1) and defined($2));
+}
+
+exit 0;

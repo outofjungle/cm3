@@ -1,0 +1,12 @@
+#!/bin/sh
+
+rm -rf ./t/.db
+mkdir -p t/.db
+
+if [ -f t/files/test.db ]; then
+    cp t/files/test.db t/.db/test.db
+else
+	echo "test db not found" 1>&2
+	exit 1
+fi
+exit 0

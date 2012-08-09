@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# log 150x 16M files with timestamps
+exec /bin/setuidgid chiseldata /bin/multilog t s16777215 n150 /logs/chisel/sanity.d/

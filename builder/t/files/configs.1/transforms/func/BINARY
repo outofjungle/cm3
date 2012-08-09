@@ -1,0 +1,5 @@
+fake.png:
+    - use fake.png
+
+rawtest:
+    - use rawtest

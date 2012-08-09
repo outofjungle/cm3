@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /bin/reporter_puller 2>&1

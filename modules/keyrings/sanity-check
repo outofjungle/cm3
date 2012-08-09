@@ -1,0 +1,17 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ humanring.gpg humanring.gpg.asc autoring.gpg autoring.gpg.asc / ],
+    max   => [ qw/ humanring.gpg humanring.gpg.asc autoring.gpg autoring.gpg.asc / ],
+);
+
+# FIXME this should probably run some sort of gpg command on the new keyring
+
+exit 0;

@@ -1,0 +1,185 @@
+#!/usr/bin/perl -w
+
+
+use strict;
+use lib '/lib/perl5/site_perl'; # for YAML::Tiny
+use Scripts qw/:all/;
+use YAML::Tiny ();
+
+my %files = args()
+  or die;
+
+my $file = $files{MAIN}; # ssh authorized_keys
+my @symlinks;
+
+if( $files{symlink} ) {
+    @symlinks = split "\n", read_file( filename => $files{symlink} );
+}
+
+my $sshkeys = YAML::Tiny::LoadFile($file);
+die "unable to get keys" unless 'HASH' eq ref $sshkeys;
+
+# scan accounts on the box
+
+my $file_passwd = $^O eq 'freebsd' ? '/etc/master.passwd' : '/etc/passwd';
+
+open my $fh_passwd, "<", $file_passwd
+  or die "open $file_passwd: $!";
+
+my @passwd;
+while( my $line_passwd = <$fh_passwd> ) {
+    next if $line_passwd =~ /^\s*$/;
+    next if $line_passwd =~ /^\s*\#/;
+
+    my @ent = split /:/, $line_passwd;
+    next unless @ent >= 7;
+    push @passwd, [
+        $ent[0],     # login
+        $ent[2],     # uid
+        $ent[3],     # gid
+        $ent[-2],    # homedir
+    ];
+}
+
+close $fh_passwd;
+
+USER: for my $pwent ( @passwd ) {
+    my ( $login, $uid, $gid, $homedir ) = @$pwent;
+    
+    # sanity
+    next unless $login =~ /^[a-z][a-z0-9\-\_]{0,30}$/;
+    next unless $homedir eq "/home/$login";
+    next if -l $homedir; # just skip if homedir is a symlink
+    
+    # Let's try to avoid system accounts
+    next if $uid < 1000;
+    next if $uid >= 2**32 - 2;
+
+    ( $_ eq $login and next USER ) for qw/ root toor daemon bin sys sync
+                                           man lp mail news uucp proxy nscd
+                                           amanda backup ntp rpm vcsa pcap bind postfix
+                                           operator nobody privoxy bitlbee quagga dba
+                                           cyrus sms fbt postgres ircd oraexp cam perm
+                                            /;
+    
+    # runs as root
+    # create homedir if not yet existing
+    # and chown properly
+
+    if (not -e "/home/$login") {
+        Scripts::mkdir_path "/home/$login", 0755;
+        Scripts::chown_file $uid, $gid, "/home/$login" if -o "/home/$login"; # only chown if we own
+        warn "created homedir for $login\n" if $ENV{CHISEL_DEBUG};
+    }
+    if (not -e "/home/$login/.ssh") {
+        Scripts::mkdir_path "/home/$login/.ssh", 0755;
+        Scripts::chown_file $uid, $gid, "/home/$login/.ssh" if -o "/home/$login/.ssh"; # only chown if we own
+    }
+    
+    foreach my $s (@symlinks) { # symlink some stuff
+        next if $s =~ /^#/;
+        next if $s =~ /^\s*$/;
+        next unless $s =~ /^(force\s|)\s*([\w\.]+)\s+([\w\.\/]+)$/;
+        
+        my ($force, $link, $target) = ($1, $2, $3);
+        
+        $link = "/home/$login/$link";
+        
+        if( ! lstat $link ) { # missing
+            eval {
+                local $( = $gid;
+                local $) = "$gid $gid";
+                local $< = $uid;
+                local $> = $uid;
+
+                die unless $( == $gid && $) eq "$gid $gid";
+                die unless $> == $uid && $< == $uid;
+                
+                Scripts::symlink_file $target, $link;
+            };
+        }
+        elsif( $force && ( ! -l _ || readlink $link ne $target ) ) { # wrong
+            eval {
+                local $( = $gid;
+                local $) = "$gid $gid";
+                local $< = $uid;
+                local $> = $uid;
+
+                die unless $( == $gid && $) eq "$gid $gid";
+                die unless $> == $uid && $< == $uid;
+                
+                Scripts::unlink_file $link;
+                Scripts::symlink_file $target, $link;
+            };
+        }
+    }
+    
+    # construct the upcoming keyfile(s) in ram:
+    my %keydata;
+    
+    if( $sshkeys->{$login} && @{ $sshkeys->{$login} } ) {
+        foreach my $keyline ( @{ $sshkeys->{$login} } ) {
+            my ( $keyflags, $keyraw ) = ( $keyline =~ /^(?:([A-Z]+)\s+)?(.+)/ );
+            $keyflags = 'L' if !defined $keyflags;
+            $keydata{$_} .= "$keyraw\n" for split //, $keyflags;
+        }
+    }
+
+    # S = sudo keys
+    if( $keydata{'S'} ) {
+        # install pam keys
+        write_file(
+            filename  => "/etc/security/pamkeys/$login",
+            directory => "/etc/security/pamkeys",
+            mode      => 0644,
+            contents  => $keydata{'S'},
+        );
+
+        # prevent regular users from seeing privilege escalation keys
+        Scripts::chmod_file 0700, "/etc/security/pamkeys";
+    } elsif( -f "/etc/security/pamkeys/$login" ) {
+        # remove pam keys
+        Scripts::unlink_file "/etc/security/pamkeys/$login";
+    }
+
+    # L = login keys
+    if( $keydata{'L'} ) {
+        # read the old file, if it exists
+        # and if it is the same as the data we're about to apply, do nothing
+        my $oldkeydata = eval { read_file( filename => "/home/$login/.ssh/authorized_keys" ) };
+
+        if( !$oldkeydata || $keydata{'L'} ne $oldkeydata ) {
+            eval {
+                local $( = $gid;
+                local $) = "$gid $gid";
+                local $< = $uid;
+                local $> = $uid;
+
+                die unless $( == $gid && $) eq "$gid $gid";
+                die unless $> == $uid && $< == $uid;
+
+                my $key_file = "/home/$login/.ssh/authorized_keys";
+                my $mode = 0644;
+
+                # fail if key file not writable
+                if (-e $key_file) {
+                    die "Key not writable." unless (-w $key_file);
+                    # get original permissions, just in case
+                    $mode = (stat($key_file))[2];
+                }
+
+                write_file(
+                    filename  => $key_file,
+                    directory => "/home/$login/.ssh",
+                    mode      => $mode,
+                    contents  => $keydata{'L'},
+                );
+
+                warn "updated authorized_keys for $login\n" if $ENV{CHISEL_DEBUG};
+            };
+            if ($@ and $ENV{CHISEL_DEBUG}) {
+                warn "unable to open authorized_keys for $login: $@";
+            }
+        }
+    }
+}

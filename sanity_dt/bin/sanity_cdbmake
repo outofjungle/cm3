@@ -1,0 +1,42 @@
+######################################################################
+# Copyright (c) 2012, Yahoo! Inc. All rights reserved.
+#
+# This program is free software. You may copy or redistribute it under
+# the same terms as Perl itself. Please see the LICENSE.Artistic file 
+# included with this project for the terms of the Artistic License
+# under which this project is licensed. 
+######################################################################
+
+
+#!/usr/local/bin/perl -w
+use strict;
+
+my $tcprules;
+my $os_arch = qx/uname -p/;
+chomp($os_arch);
+
+if( $os_arch eq "x86_64" ) {
+    $tcprules = "/bin64/tcprules";
+} else {
+    $tcprules = "/bin/tcprules";
+}
+
+my $tmp_file = "/tmp/sanity_rules.txt";
+
+my @allowed_clients = split( /,/,  $ENV{"allowed_clients"} );
+
+open( my $rules_file, '>', $tmp_file ) or die "could not open file for write: $!\n";
+
+foreach my $line (@allowed_clients) {
+   print $rules_file $line . ":allow\n";
+}
+
+# add final deny rule
+print $rules_file  ":deny\n";
+
+close $rules_file;
+
+# now run through tcprules
+system("$tcprules /var/chisel/sanity.cdb /var/chisel/sanity.cdb.tmp < $tmp_file");
+
+unlink $tmp_file;

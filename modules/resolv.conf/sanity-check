@@ -1,0 +1,59 @@
+#!/usr/local/bin/perl -w
+
+use strict;
+use warnings;
+use Chisel::SanityCheck qw/:all/;
+
+my %files = args();
+
+check_files(
+    files => \%files,
+    min   => [ qw/ MAIN / ],
+    max   => [ qw/ MAIN rotate / ],
+);
+
+my @contents = split "\n", read_file( filename => $files{MAIN} );
+
+# keep track of what we found
+my ( @search_domain, @nameserver );
+
+foreach (@contents) {
+    s/[#;].*$//;    # remove comments
+    s/\s*$//;       # remove trailing whitespace
+    next if /^$/;   # skip blank lines
+
+    my ( $opt, $arg ) = /^(\w+)\s+(.+)$/;
+    
+    if( $opt eq 'nameserver' ) {
+        # remember to add IPv6 localhosts when this module supports IPv6
+        $arg =~ /^\d+\.\d+\.\d+\.\d+$/
+          or die "bad nameserver $arg\n";
+        
+        push @nameserver, $arg;
+    }
+    
+    elsif( $opt eq 'search' || $opt eq 'domain' ) {
+        my @search = split /\s+/, $arg;
+        
+        @search > 0 or die "empty $opt\n";
+        $opt eq 'search' || @search == 1 or die "domain too long: $arg\n";
+        
+        foreach my $s (@search) {
+            $s =~ /^[\w\.]+$/ or die "bad $opt: $s\n";
+            push @search_domain, $s;
+        }
+    }
+    
+    else {
+        die "bad option $opt\n";
+    }
+}
+
+# remove localhost
+# remember to add IPv6 localhosts when this module supports IPv6
+@nameserver = grep { $_ ne "127.0.0.1" && $_ ne "localhost" } @nameserver;
+
+@nameserver or die "no nameservers";
+@search_domain or die "no search or domain";
+
+exit 0;
